@@ -1,0 +1,15 @@
+{
+  "masterKey": "0555",
+  "devices": [
+    {
+      "mac": "00-0C-29-BA-CE-07",
+      "ip": "192.168.136.217",
+      "hostname": "Test-Student-PC"
+    },
+    {
+      "mac": "24-FB-E3-42-F1-ED",
+      "ip": "192.168.247.1",
+      "hostname": "Muhammad-PC"
+    }
+  ]
+}

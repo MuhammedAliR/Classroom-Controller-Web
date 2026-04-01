@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Classroom Controller - Veyon-Style</title>
+  <link rel="stylesheet" href="styles.css?v=2" />
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/microsoft-signalr/8.0.0/signalr.min.js" 
+    crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+</head>
+<body>
+  <!-- Login Modal -->
+  <div id="login-modal" class="modal">
+    <div class="modal-content">
+      <h2>Classroom Controller</h2>
+      <p>Enter Master Key to continue</p>
+      <input type="password" id="master-key-input" placeholder="Master Key" autocomplete="off" />
+      <button id="login-submit">Unlock</button>
+    </div>
+  </div>
+
+  <!-- Main Application -->
+  <div id="app-shell" class="hidden">
+    <!-- Top Toolbar -->
+    <div class="top-toolbar">
+      <div class="toolbar-title">
+        <h1>Classroom Controller</h1>
+      </div>
+      <div class="toolbar-controls">
+        <button id="btn-select-all" class="toolbar-btn" title="Select all devices">
+          ☑️ Select All
+        </button>
+        <button id="btn-lock-selected" class="toolbar-btn" title="Lock selected devices">
+          🔒 Lock Selected
+        </button>
+        <button id="btn-unlock-selected" class="toolbar-btn" title="Unlock selected devices">
+          🔓 Unlock Selected
+        </button>
+        <button id="btn-global-message" class="toolbar-btn" title="Send message to all">
+          💬 Global Message
+        </button>
+      </div>
+    </div>
+
+    <!-- Device Grid -->
+    <div class="main-content">
+      <div id="devices-grid" class="devices-grid"></div>
+    </div>
+  </div>
+
+  <script src="app.js?v=2"></script>
+</body>
+</html>
