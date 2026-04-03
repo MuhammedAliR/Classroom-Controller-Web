@@ -7,6 +7,18 @@ using ClassroomController.Server.Models;
 using Microsoft.EntityFrameworkCore;
 
 var builder = WebApplication.CreateBuilder(args);
+builder.Configuration.AddJsonFile("config.json", optional: true, reloadOnChange: true);
+builder.Logging.ClearProviders();
+builder.Logging.AddSimpleConsole(options =>
+{
+    options.SingleLine = true;
+    options.TimestampFormat = "HH:mm:ss ";
+});
+builder.Logging.SetMinimumLevel(LogLevel.Information);
+builder.Logging.AddFilter("Microsoft.AspNetCore.Hosting.Diagnostics", LogLevel.Warning);
+builder.Logging.AddFilter("Microsoft.AspNetCore.Routing.EndpointMiddleware", LogLevel.Warning);
+builder.Logging.AddFilter("Microsoft.EntityFrameworkCore.Database.Command", LogLevel.Warning);
+builder.Logging.AddFilter("Microsoft.AspNetCore.StaticFiles.StaticFileMiddleware", LogLevel.Warning);
 
 // Kestrel configuration for standard ports
 builder.WebHost.ConfigureKestrel(options =>
@@ -92,6 +104,15 @@ using (var scope = app.Services.CreateScope())
     {
         app.Logger.LogWarning("config.json not found at {Path}", configFile);
     }
+
+    // Mark all devices as offline at server startup (recovery after server restart)
+    var allDevices = db.Devices.ToList();
+    foreach (var device in allDevices)
+    {
+        device.Status = "Offline";
+    }
+    db.SaveChanges();
+    app.Logger.LogInformation("Server startup: all devices set to Offline for clean state.");
 }
 
 // SignalR and hub route

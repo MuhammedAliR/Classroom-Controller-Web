@@ -1,3 +1,4 @@
 {
-  "ServerUrl": "http://localhost:5000"
+  "ServerUrl": "http://localhost:5000",
+  "MasterKey": "0555"
 }

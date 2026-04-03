@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Classroom Controller - Veyon-Style</title>
-  <link rel="stylesheet" href="styles.css?v=2" />
+  <link rel="stylesheet" href="styles.css?v=3" />
   <script src="https://cdnjs.cloudflare.com/ajax/libs/microsoft-signalr/8.0.0/signalr.min.js" 
     crossorigin="anonymous" referrerpolicy="no-referrer"></script>
 </head>
@@ -21,33 +21,19 @@
 
   <!-- Main Application -->
   <div id="app-shell" class="hidden">
-    <!-- Top Toolbar -->
-    <div class="top-toolbar">
-      <div class="toolbar-title">
-        <h1>Classroom Controller</h1>
-      </div>
-      <div class="toolbar-controls">
-        <button id="btn-select-all" class="toolbar-btn" title="Select all devices">
-          ☑️ Select All
-        </button>
-        <button id="btn-lock-selected" class="toolbar-btn" title="Lock selected devices">
-          🔒 Lock Selected
-        </button>
-        <button id="btn-unlock-selected" class="toolbar-btn" title="Unlock selected devices">
-          🔓 Unlock Selected
-        </button>
-        <button id="btn-global-message" class="toolbar-btn" title="Send message to all">
-          💬 Global Message
-        </button>
-      </div>
-    </div>
-
-    <!-- Device Grid -->
     <div class="main-content">
+      <h1>Classroom Controller (Functional Test Mode)</h1>
       <div id="devices-grid" class="devices-grid"></div>
     </div>
   </div>
 
-  <script src="app.js?v=2"></script>
+  <div id="rc-modal" class="hidden">
+    <div class="rc-panel">
+      <canvas id="rc-canvas" width="1280" height="720"></canvas>
+      <button id="rc-close-btn" type="button">Close Remote Control</button>
+    </div>
+  </div>
+
+  <script src="app.js?v=3"></script>
 </body>
 </html>

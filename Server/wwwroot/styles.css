@@ -108,24 +108,90 @@ body {
 #app-shell {
   display: flex;
   flex-direction: column;
-  height: 100vh;
+  min-height: 100vh;
 }
 
 #app-shell.hidden {
   display: none;
 }
 
-/* Top Toolbar */
-.top-toolbar {
-  background-color: #0a0a0e;
-  border-bottom: 2px solid var(--border-inactive);
+.main-content {
   padding: 1rem;
+}
+
+.devices-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.device-card {
+  width: 320px;
+  background-color: #ffffff;
+  border: 1px solid #cccccc;
+  border-radius: 5px;
+  padding: 8px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.15);
+}
+
+.card-header {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.card-header .status-badge {
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-size: 0.75rem;
+}
+
+.status-badge.online { background: #2ecc71; color: #fff; }
+.status-badge.offline { background: #e74c3c; color: #fff; }
+
+.screen-container {
+  position: relative;
+  width: 100%;
+  padding-bottom: 56.25%;
+  background: #000;
+  margin-bottom: 8px;
+}
+
+.screen-frame {
+  position: absolute;
+  top:0; left:0; width:100%; height:100%;
+}
+
+.screen-frame canvas {
+  width: 100%;
+  height: 100%;
+}
+
+.offline-overlay {
+  position: absolute;
+  inset: 0;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 2rem;
-  flex-wrap: wrap;
+  justify-content: center;
+  background: rgba(0,0,0,0.5);
+  color: #fff;
+  font-size: 1.1rem;
 }
+
+.card-footer {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 6px;
+}
+
+.action-btn {
+  padding: 6px;
+  border: 1px solid #999;
+  background: #eee;
+  cursor: pointer;
+}
+
+.action-btn:hover { background: #ddd; }
 
 .toolbar-title h1 {
   margin: 0;
@@ -284,7 +350,7 @@ body {
 /* Card Footer - Action Buttons */
 .card-footer {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(5, 1fr);
   gap: 0.5rem;
   padding: 0.75rem;
   background-color: #1a1a20;
@@ -349,6 +415,68 @@ body {
   background-color: rgba(231, 76, 60, 0.2);
 }
 
+.action-btn.control {
+  color: var(--accent);
+}
+
+.action-btn.control:hover {
+  background-color: rgba(52, 152, 219, 0.2);
+}
+
+#rc-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(8, 10, 18, 0.82);
+  padding: 2rem;
+}
+
+#rc-modal.hidden {
+  display: none;
+}
+
+.rc-panel {
+  width: 100%;
+  max-width: 1400px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1rem;
+}
+
+#rc-canvas {
+  width: min(80vw, calc(80vh * 16 / 9));
+  max-width: 100%;
+  aspect-ratio: 16 / 9;
+  display: block;
+  background: #000000;
+  border: 2px solid rgba(255, 255, 255, 0.14);
+  border-radius: 10px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.55);
+  cursor: crosshair;
+}
+
+#rc-close-btn {
+  padding: 0.85rem 1.5rem;
+  border: 1px solid var(--border-inactive);
+  border-radius: 999px;
+  background: #181c25;
+  color: var(--text-primary);
+  font-size: 0.95rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 0.2s ease, border-color 0.2s ease, transform 0.2s ease;
+}
+
+#rc-close-btn:hover {
+  background: #222837;
+  border-color: var(--accent);
+  transform: translateY(-1px);
+}
+
 /* Scrollbar Styling */
 .main-content::-webkit-scrollbar {
   width: 8px;
@@ -395,5 +523,17 @@ body {
 
   .toolbar-title h1 {
     margin: 0;
+  }
+
+  .card-footer {
+    grid-template-columns: repeat(3, 1fr);
+  }
+
+  #rc-modal {
+    padding: 1rem;
+  }
+
+  #rc-canvas {
+    width: 100%;
   }
 }

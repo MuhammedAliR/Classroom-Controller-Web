@@ -15,12 +15,12 @@ public partial class App : System.Windows.Application
 
         // Start the client engine in the background
         _clientEngine = new ClientEngine(configService);
-        _clientEngine.StartAsync().ConfigureAwait(false);
+        _ = _clientEngine.StartAsync();
     }
 
     protected override void OnExit(ExitEventArgs e)
     {
-        _clientEngine?.StopAsync().ConfigureAwait(false);
+        _clientEngine?.StopAsync().GetAwaiter().GetResult();
         base.OnExit(e);
     }
 }

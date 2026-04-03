@@ -1,0 +1,25 @@
+<Window x:Class="ClassroomController.Client.UI.LockWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="LockWindow" 
+        WindowStyle="None"
+        WindowState="Maximized"
+        Topmost="True"
+        Background="Black"
+        ShowInTaskbar="False"
+        AllowsTransparency="False"
+        KeyDown="Window_KeyDown"
+        MouseDown="Window_MouseDown"
+        MouseMove="Window_MouseMove">
+    <Grid>
+        <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center">
+            <TextBlock 
+                Text="SCREEN LOCKED BY TEACHER"
+                FontSize="48"
+                FontWeight="Bold"
+                Foreground="Red"
+                TextAlignment="Center"
+                Margin="20"/>
+        </StackPanel>
+    </Grid>
+</Window>

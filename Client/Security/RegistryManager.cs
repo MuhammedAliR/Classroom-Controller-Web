@@ -1,4 +1,5 @@
 using Microsoft.Win32;
+using ClassroomController.Client.Utils;
 
 namespace ClassroomController.Client.Security;
 
@@ -16,7 +17,7 @@ public class RegistryManager
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"Failed to set admin mode: {ex.Message}");
+            Logger.Log($"Failed to set admin mode: {ex.Message}");
         }
     }
 }

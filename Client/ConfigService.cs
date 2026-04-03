@@ -1,11 +1,13 @@
 using System.IO;
 using System.Text.Json;
+using ClassroomController.Client.Utils;
 
 namespace ClassroomController.Client;
 
 public class ConfigService
 {
     public string ServerUrl { get; private set; } = "http://localhost:5000";
+    public string MasterKey { get; private set; } = string.Empty;
 
     public ConfigService()
     {
@@ -20,11 +22,16 @@ public class ConfigService
                 {
                     ServerUrl = config.ServerUrl;
                 }
+
+                if (config?.MasterKey != null)
+                {
+                    MasterKey = config.MasterKey;
+                }
             }
             catch (Exception ex)
             {
                 // Fallback to default
-                Console.WriteLine($"Failed to load config: {ex.Message}");
+                Logger.Log($"Failed to load config: {ex.Message}");
             }
         }
     }
@@ -32,5 +39,6 @@ public class ConfigService
     private class Config
     {
         public string? ServerUrl { get; set; }
+        public string? MasterKey { get; set; }
     }
 }
