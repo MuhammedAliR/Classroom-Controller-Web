@@ -1,0 +1,53 @@
+# Build output
+[Bb]in/
+[Oo]bj/
+[Dd]ebug/
+[Rr]elease/
+[Pp]ublish/
+artifacts/
+
+# Visual Studio / IDE
+.vs/
+.vscode/
+.idea/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+*.rsuser
+
+# NuGet
+packages/
+*.nupkg
+*.snupkg
+
+# Test and coverage
+TestResults/
+coverage/
+*.coverage
+*.coveragexml
+
+# OS files
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Local configuration and secrets
+Server/config.json
+Client/config.json
+*.local.json
+*.secret.json
+
+# Runtime data
+Server/app_data/
+*.db
+*.db-shm
+*.db-wal
+client_log.txt
+Client/**/client_log.txt
+
+# Publish profiles
+*.pubxml.user
+
+# Logs
+*.log

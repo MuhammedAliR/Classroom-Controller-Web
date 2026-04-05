@@ -1,4 +1,4 @@
 {
   "ServerUrl": "http://localhost:5000",
-  "MasterKey": "0555"
+  "MasterKey": "change-this-key"
 }
