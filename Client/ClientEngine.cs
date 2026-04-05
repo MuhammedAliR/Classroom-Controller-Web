@@ -1,5 +1,6 @@
 using ClassroomController.Client.Media;
 using ClassroomController.Client.Network;
+using ClassroomController.Client.Execution;
 
 namespace ClassroomController.Client;
 
@@ -18,6 +19,7 @@ public class ClientEngine
     public async Task StartAsync()
     {
         _cts = new CancellationTokenSource();
+        SystemController.EnforceStudentMode(true);
 
         // Start connections
         await _connectionManager.StartAsync(_cts.Token);
@@ -28,7 +30,14 @@ public class ClientEngine
 
     public async Task StopAsync()
     {
-        _cts?.Cancel();
-        await _connectionManager.StopAsync();
+        try
+        {
+            _cts?.Cancel();
+            await _connectionManager.StopAsync();
+        }
+        finally
+        {
+            SystemController.EnforceStudentMode(false);
+        }
     }
 }

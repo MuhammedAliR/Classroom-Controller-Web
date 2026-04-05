@@ -1,4 +1,5 @@
 using System.Windows;
+using ClassroomController.Client.Execution;
 
 namespace ClassroomController.Client;
 
@@ -10,6 +11,8 @@ public partial class App : System.Windows.Application
     {
         base.OnStartup(e);
 
+        SystemController.RestoreLockPoliciesAndInput();
+
         // Load configuration
         var configService = new ConfigService();
 
@@ -20,7 +23,15 @@ public partial class App : System.Windows.Application
 
     protected override void OnExit(ExitEventArgs e)
     {
-        _clientEngine?.StopAsync().GetAwaiter().GetResult();
-        base.OnExit(e);
+        try
+        {
+            SystemController.RestoreLockPoliciesAndInput();
+            _clientEngine?.StopAsync().GetAwaiter().GetResult();
+        }
+        finally
+        {
+            SystemController.RestoreLockPoliciesAndInput();
+            base.OnExit(e);
+        }
     }
 }

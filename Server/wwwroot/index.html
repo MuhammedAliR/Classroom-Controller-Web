@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Classroom Controller - Veyon-Style</title>
-  <link rel="stylesheet" href="styles.css?v=3" />
+  <link rel="stylesheet" href="styles.css?v=5" />
   <script src="https://cdnjs.cloudflare.com/ajax/libs/microsoft-signalr/8.0.0/signalr.min.js" 
     crossorigin="anonymous" referrerpolicy="no-referrer"></script>
 </head>
@@ -27,6 +27,75 @@
     </div>
   </div>
 
+  <div id="web-filter-panel" class="side-panel">
+    <div class="side-panel-header">
+      <div>
+        <p class="side-panel-eyebrow">Web Filter</p>
+        <h2 id="filter-device-name">Select a student</h2>
+        <p id="filter-device-mac" class="side-panel-subtitle">Choose a device card to manage website blocking.</p>
+      </div>
+      <button id="web-filter-close-btn" class="side-panel-close-btn" type="button" aria-label="Close web filter panel">X</button>
+    </div>
+
+    <div class="filter-site-list">
+      <label class="filter-site-item">
+        <div class="filter-site-meta">
+          <span class="site-logo">YT</span>
+          <div>
+            <div class="filter-site-name">YouTube</div>
+            <div class="filter-site-domain">youtube.com</div>
+          </div>
+        </div>
+        <span class="toggle-switch">
+          <input class="web-filter-toggle" type="checkbox" data-domain="youtube.com" />
+          <span class="toggle-slider"></span>
+        </span>
+      </label>
+
+      <label class="filter-site-item">
+        <div class="filter-site-meta">
+          <span class="site-logo">IG</span>
+          <div>
+            <div class="filter-site-name">Instagram</div>
+            <div class="filter-site-domain">instagram.com</div>
+          </div>
+        </div>
+        <span class="toggle-switch">
+          <input class="web-filter-toggle" type="checkbox" data-domain="instagram.com" />
+          <span class="toggle-slider"></span>
+        </span>
+      </label>
+
+      <label class="filter-site-item">
+        <div class="filter-site-meta">
+          <span class="site-logo">TT</span>
+          <div>
+            <div class="filter-site-name">TikTok</div>
+            <div class="filter-site-domain">tiktok.com</div>
+          </div>
+        </div>
+        <span class="toggle-switch">
+          <input class="web-filter-toggle" type="checkbox" data-domain="tiktok.com" />
+          <span class="toggle-slider"></span>
+        </span>
+      </label>
+
+      <label class="filter-site-item">
+        <div class="filter-site-meta">
+          <span class="site-logo">DC</span>
+          <div>
+            <div class="filter-site-name">Discord</div>
+            <div class="filter-site-domain">discord.com</div>
+          </div>
+        </div>
+        <span class="toggle-switch">
+          <input class="web-filter-toggle" type="checkbox" data-domain="discord.com" />
+          <span class="toggle-slider"></span>
+        </span>
+      </label>
+    </div>
+  </div>
+
   <div id="rc-modal" class="hidden">
     <div class="rc-panel">
       <canvas id="rc-canvas" width="1280" height="720"></canvas>
@@ -34,6 +103,6 @@
     </div>
   </div>
 
-  <script src="app.js?v=3"></script>
+  <script src="app.js?v=8"></script>
 </body>
 </html>

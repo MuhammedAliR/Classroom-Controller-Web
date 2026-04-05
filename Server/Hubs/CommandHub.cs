@@ -140,7 +140,7 @@ public class CommandHub : Hub
         return true;
     }
 
-    public async Task SendMouseInput(string targetMac, string eventType, double xPct, double yPct)
+    public async Task SendMouseInput(string targetMac, string eventType, double xPct, double yPct, int button)
     {
         var normalizedTargetMac = targetMac.Trim().ToUpperInvariant();
 
@@ -150,6 +150,58 @@ public class CommandHub : Hub
             return;
         }
 
-        await Clients.Client(connectionId).SendAsync("ReceiveMouseInput", eventType, xPct, yPct);
+        await Clients.Client(connectionId).SendAsync("ReceiveMouseInput", eventType, xPct, yPct, button);
+    }
+
+    public async Task SendKeyboardInput(string targetMac, string eventType, int keyCode)
+    {
+        var normalizedTargetMac = targetMac.Trim().ToUpperInvariant();
+
+        if (!_connectedClients.TryGetValue(normalizedTargetMac, out var connectionId))
+        {
+            _logger.LogWarning("[Hub] Keyboard input {EventType} not sent because {MacAddress} is offline", eventType, normalizedTargetMac);
+            return;
+        }
+
+        await Clients.Client(connectionId).SendAsync("ReceiveKeyboardInput", eventType, keyCode);
+    }
+
+    public async Task SetStreamQuality(string targetMac, string quality)
+    {
+        var normalizedTargetMac = targetMac.Trim().ToUpperInvariant();
+
+        if (!_connectedClients.TryGetValue(normalizedTargetMac, out var connectionId))
+        {
+            _logger.LogWarning("[Hub] Stream quality {Quality} not sent because {MacAddress} is offline", quality, normalizedTargetMac);
+            return;
+        }
+
+        await Clients.Client(connectionId).SendAsync("SetStreamQuality", quality);
+    }
+
+    public async Task ToggleAdminMode(string targetMac, bool enableAdmin)
+    {
+        var normalizedTargetMac = targetMac.Trim().ToUpperInvariant();
+
+        if (!_connectedClients.TryGetValue(normalizedTargetMac, out var connectionId))
+        {
+            _logger.LogWarning("[Hub] Admin mode {EnableAdmin} not sent because {MacAddress} is offline", enableAdmin, normalizedTargetMac);
+            return;
+        }
+
+        await Clients.Client(connectionId).SendAsync("ReceiveAdminModeUpdate", enableAdmin);
+    }
+
+    public async Task ToggleWebsiteBlock(string targetMac, string domain, bool block)
+    {
+        var normalizedTargetMac = targetMac.Trim().ToUpperInvariant();
+
+        if (!_connectedClients.TryGetValue(normalizedTargetMac, out var connectionId))
+        {
+            _logger.LogWarning("[Hub] Website block {Domain}={Block} not sent because {MacAddress} is offline", domain, block, normalizedTargetMac);
+            return;
+        }
+
+        await Clients.Client(connectionId).SendAsync("ReceiveWebsiteBlock", domain, block);
     }
 }

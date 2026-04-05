@@ -2,7 +2,6 @@ using System.Net.WebSockets;
 using System.Text;
 using System.Windows;
 using Microsoft.AspNetCore.SignalR.Client;
-using ClassroomController.Client.Security;
 using ClassroomController.Client.Utils;
 using ClassroomController.Client.Execution;
 
@@ -16,7 +15,6 @@ public class ConnectionManager
     private ClientWebSocket? _webSocket;
     private bool _isStopping = false;
     private bool _hasLoggedWebSocketUnavailable = false;
-    private readonly RegistryManager _registryManager = new();
     private readonly ConfigService _configService;
 
     public ConnectionManager(ConfigService configService)
@@ -53,16 +51,6 @@ public class ConnectionManager
             }
         });
 
-        _hubConnection.On<string>("ToggleAdminMode", (targetMac) =>
-        {
-            if (targetMac == _realMacAddress)
-            {
-                // Toggle admin mode
-                _registryManager.SetAdminMode(false); // Example: disable
-                Logger.Log("ToggleAdminMode event received for this client.");
-            }
-        });
-
         // Register listener for command execution (replaces old handlers above)
         _hubConnection.On<string, string>("ExecuteCommand", (action, payload) =>
         {
@@ -70,9 +58,38 @@ public class ConnectionManager
             HandleCommand(action, payload);
         });
 
-        _hubConnection.On<string, double, double>("ReceiveMouseInput", (eventType, xPct, yPct) =>
+        _hubConnection.On<string, double, double, int>("ReceiveMouseInput", (eventType, xPct, yPct, button) =>
         {
-            SystemController.HandleMouseInput(eventType, xPct, yPct);
+            SystemController.HandleMouseInput(eventType, xPct, yPct, button);
+        });
+
+        _hubConnection.On<string, int>("ReceiveKeyboardInput", (eventType, keyCode) =>
+        {
+            SystemController.HandleKeyboardInput(eventType, keyCode);
+        });
+
+        _hubConnection.On<string>("SetStreamQuality", (quality) =>
+        {
+            if (string.Equals(quality, "high", StringComparison.OrdinalIgnoreCase))
+            {
+                SystemController.SetStreamModeHigh();
+            }
+            else
+            {
+                SystemController.SetStreamModeLow();
+            }
+        });
+
+        _hubConnection.On<bool>("ReceiveAdminModeUpdate", enableAdmin =>
+        {
+            Logger.Log($"ReceiveAdminModeUpdate received: enableAdmin={enableAdmin}");
+            SystemController.EnforceStudentMode(!enableAdmin);
+        });
+
+        _hubConnection.On<string, bool>("ReceiveWebsiteBlock", (domain, block) =>
+        {
+            Logger.Log($"ReceiveWebsiteBlock received: domain={domain}, block={block}");
+            SystemController.HandleWebsiteBlock(domain, block);
         });
 
         _hubConnection.Reconnecting += error =>
@@ -147,13 +164,21 @@ public class ConnectionManager
     {
         _isStopping = true;
 
-        if (_hubConnection != null)
+        try
         {
-            await _hubConnection.StopAsync();
+            if (_hubConnection != null)
+            {
+                await _hubConnection.StopAsync();
+            }
+            if (_webSocket != null)
+            {
+                await _webSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Client stopping", CancellationToken.None);
+            }
         }
-        if (_webSocket != null)
+        finally
         {
-            await _webSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Client stopping", CancellationToken.None);
+            SystemController.RestoreLockPoliciesAndInput();
+            SystemController.EnforceStudentMode(false);
         }
     }
 

@@ -1,4 +1,5 @@
 using System.Drawing;
+using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.IO;
 using System.Windows.Forms;
@@ -9,6 +10,14 @@ namespace ClassroomController.Client.Media;
 
 public class ScreenCapturer
 {
+    public static volatile int TargetWidth = 640;
+    public static volatile int TargetHeight = 360;
+    public static volatile int TargetDelayMs = 250;
+    public static volatile int TargetJpegQuality = 55;
+
+    private static readonly ImageCodecInfo? JpegCodec =
+        Array.Find(ImageCodecInfo.GetImageEncoders(), codec => codec.FormatID == ImageFormat.Jpeg.Guid);
+
     private readonly ConnectionManager _connectionManager;
 
     public ScreenCapturer(ConnectionManager connectionManager)
@@ -30,7 +39,7 @@ public class ScreenCapturer
                 Logger.Log($"Capture error: {ex.Message}");
             }
             
-            await Task.Delay(250, cancellationToken); // ~4 FPS
+            await Task.Delay(TargetDelayMs, cancellationToken);
         }
     }
 
@@ -44,14 +53,39 @@ public class ScreenCapturer
         using var graphics = Graphics.FromImage(bitmap);
         graphics.CopyFromScreen(screenBounds.X, screenBounds.Y, 0, 0, screenBounds.Size);
 
-        // Downscale to 640x360
-        using var resized = new Bitmap(640, 360);
-        using var resizeGraphics = Graphics.FromImage(resized);
-        resizeGraphics.DrawImage(bitmap, 0, 0, 640, 360);
+        var targetWidth = Math.Max(1, TargetWidth);
+        var targetHeight = Math.Max(1, TargetHeight);
 
-        // Compress to JPEG
         using var ms = new MemoryStream();
-        resized.Save(ms, ImageFormat.Jpeg);
+        if (targetWidth == screenBounds.Width && targetHeight == screenBounds.Height)
+        {
+            SaveJpeg(bitmap, ms);
+        }
+        else
+        {
+            using var resized = new Bitmap(targetWidth, targetHeight);
+            using var resizeGraphics = Graphics.FromImage(resized);
+            resizeGraphics.CompositingQuality = CompositingQuality.HighQuality;
+            resizeGraphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
+            resizeGraphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
+            resizeGraphics.SmoothingMode = SmoothingMode.HighQuality;
+            resizeGraphics.DrawImage(bitmap, 0, 0, targetWidth, targetHeight);
+            SaveJpeg(resized, ms);
+        }
+
         return ms.ToArray();
+    }
+
+    private static void SaveJpeg(Image image, Stream output)
+    {
+        if (JpegCodec != null)
+        {
+            using var encoderParameters = new EncoderParameters(1);
+            encoderParameters.Param[0] = new EncoderParameter(Encoder.Quality, (long)Math.Clamp(TargetJpegQuality, 0, 100));
+            image.Save(output, JpegCodec, encoderParameters);
+            return;
+        }
+
+        image.Save(output, ImageFormat.Jpeg);
     }
 }
