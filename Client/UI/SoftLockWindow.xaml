@@ -1,0 +1,13 @@
+<Window x:Class="ClassroomController.Client.UI.SoftLockWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        WindowStyle="None"
+        WindowState="Maximized"
+        Topmost="True"
+        ShowInTaskbar="False"
+        ResizeMode="NoResize"
+        Background="Black">
+    <Grid>
+        <Image x:Name="BackgroundImage" Stretch="Fill" />
+    </Grid>
+</Window>

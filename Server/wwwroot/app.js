@@ -8,6 +8,18 @@ const STORAGE_KEY = "masterKey";
 const LEGACY_STORAGE_KEY = "classroom_master_key";
 const TEACHER_MAC = "TEACHER-0000";
 const FILTER_DOMAINS = ["youtube.com", "instagram.com", "tiktok.com", "discord.com"];
+const REMOTE_LOCK_KEYS = [
+  "Escape",
+  "Tab",
+  "AltLeft",
+  "AltRight",
+  "MetaLeft",
+  "MetaRight",
+  "ControlLeft",
+  "ControlRight",
+  "ShiftLeft",
+  "ShiftRight"
+];
 
 const loginModal = document.getElementById("login-modal");
 const masterKeyInput = document.getElementById("master-key-input");
@@ -23,21 +35,9 @@ const rcModal = document.getElementById("rc-modal");
 const rcCanvas = document.getElementById("rc-canvas");
 const rcCloseBtn = document.getElementById("rc-close-btn");
 const rcContext = rcCanvas ? rcCanvas.getContext("2d") : null;
-const REMOTE_LOCK_KEYS = [
-  "Escape",
-  "Tab",
-  "AltLeft",
-  "AltRight",
-  "MetaLeft",
-  "MetaRight",
-  "ControlLeft",
-  "ControlRight",
-  "ShiftLeft",
-  "ShiftRight"
-];
 
-let connection;
-let ws;
+let connection = null;
+let ws = null;
 let devices = {};
 let activeFilterMac = null;
 let activeRcMac = null;
@@ -85,10 +85,59 @@ function createDefaultWebsiteBlockState() {
   return Object.fromEntries(FILTER_DOMAINS.map((domain) => [domain, false]));
 }
 
-function cloneWebsiteBlockState(existingState) {
+function parseBlockedWebsitesCsv(blockedWebsites) {
+  const state = createDefaultWebsiteBlockState();
+  if (typeof blockedWebsites !== "string" || !blockedWebsites.trim()) {
+    return state;
+  }
+
+  blockedWebsites
+    .split(",")
+    .map((domain) => domain.trim().toLowerCase())
+    .filter(Boolean)
+    .forEach((domain) => {
+      state[domain] = true;
+    });
+
+  return state;
+}
+
+function serializeBlockedWebsiteState(blockedWebsiteState) {
+  return Object.entries(blockedWebsiteState || {})
+    .filter(([, isBlocked]) => Boolean(isBlocked))
+    .map(([domain]) => domain)
+    .sort((left, right) => left.localeCompare(right))
+    .join(",");
+}
+
+function normalizeTimerEndTime(value) {
+  if (!value) {
+    return null;
+  }
+
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
+}
+
+function normalizeDevice(rawDevice, previousDevice) {
+  const mac = rawDevice?.macAddress || rawDevice?.mac || previousDevice?.mac || "unknown";
+  const blockedWebsitesCsv = typeof rawDevice?.blockedWebsites === "string"
+    ? rawDevice.blockedWebsites
+    : previousDevice?.blockedWebsitesCsv || "";
+  const status = rawDevice?.status || previousDevice?.status || "Offline";
+
   return {
-    ...createDefaultWebsiteBlockState(),
-    ...(existingState ?? {})
+    mac,
+    hostname: rawDevice?.hostname || previousDevice?.hostname || "Unknown",
+    ip: rawDevice?.ipAddress || rawDevice?.ip || previousDevice?.ip || "N/A",
+    status,
+    isOnline: status.toLowerCase() === "online",
+    isLocked: Boolean(rawDevice?.isLocked ?? previousDevice?.isLocked),
+    isFrozen: Boolean(rawDevice?.isFrozen ?? previousDevice?.isFrozen),
+    isAdminMode: Boolean(rawDevice?.isAdminMode ?? previousDevice?.isAdminMode),
+    timerEndTime: normalizeTimerEndTime(rawDevice?.timerEndTime ?? previousDevice?.timerEndTime),
+    blockedWebsitesCsv,
+    blockedWebsiteState: parseBlockedWebsitesCsv(blockedWebsitesCsv)
   };
 }
 
@@ -97,16 +146,120 @@ function getWebsiteBlockState(mac) {
     return createDefaultWebsiteBlockState();
   }
 
-  if (!devices[mac].blockedWebsites) {
-    devices[mac].blockedWebsites = createDefaultWebsiteBlockState();
+  return devices[mac].blockedWebsiteState;
+}
+
+function getTimerRemainingMs(device) {
+  if (!device?.timerEndTime) {
+    return null;
   }
 
-  return devices[mac].blockedWebsites;
+  return new Date(device.timerEndTime).getTime() - Date.now();
+}
+
+function formatRemainingTime(ms) {
+  const totalSeconds = Math.max(0, Math.ceil(ms / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+
+  if (hours > 0) {
+    return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+  }
+
+  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+}
+
+function getTimerBadgeConfig(device) {
+  const remainingMs = getTimerRemainingMs(device);
+  if (remainingMs == null) {
+    return { text: "Timer: Off", active: false };
+  }
+
+  return {
+    text: `Timer: ${formatRemainingTime(remainingMs)}`,
+    active: remainingMs > 0
+  };
+}
+
+function getTimerParts(device) {
+  const remainingMs = getTimerRemainingMs(device);
+  const totalSeconds = Math.max(0, Math.ceil((remainingMs ?? 0) / 1000));
+
+  return {
+    hours: Math.floor(totalSeconds / 3600),
+    minutes: Math.floor((totalSeconds % 3600) / 60),
+    seconds: totalSeconds % 60,
+    active: remainingMs != null
+  };
+}
+
+function readTimerMinutesFromCard(mac) {
+  const card = getDeviceCard(mac);
+  if (!card) {
+    return null;
+  }
+
+  const hours = Number.parseInt(card.querySelector(".t-hh")?.value ?? "0", 10) || 0;
+  const minutes = Number.parseInt(card.querySelector(".t-mm")?.value ?? "0", 10) || 0;
+  const seconds = Number.parseInt(card.querySelector(".t-ss")?.value ?? "0", 10) || 0;
+  const totalMinutes = (hours * 60) + minutes + (seconds / 60);
+
+  return totalMinutes > 0 ? totalMinutes : null;
+}
+
+function sanitizeTimerFieldValue(rawValue, maxValue) {
+  const digitsOnly = rawValue.replace(/\D/g, "").slice(0, 2);
+  if (!digitsOnly) {
+    return "";
+  }
+
+  const numericValue = Math.min(maxValue, Number.parseInt(digitsOnly, 10) || 0);
+  return String(numericValue);
+}
+
+function setupTimerInputGroup(group) {
+  const fields = Array.from(group.querySelectorAll(".t-in"));
+
+  fields.forEach((field, index) => {
+    const maxValue = Number.parseInt(field.dataset.maxValue || "59", 10);
+
+    field.addEventListener("keydown", (event) => {
+      const isModifier = event.ctrlKey || event.metaKey || event.altKey;
+      const navigationKeys = ["Backspace", "Delete", "ArrowLeft", "ArrowRight", "Tab", "Home", "End"];
+
+      if (isModifier || navigationKeys.includes(event.key)) {
+        if (event.key === "Backspace" && field.selectionStart === 0 && field.selectionEnd === 0 && index > 0 && !field.value) {
+          event.preventDefault();
+          fields[index - 1].focus();
+        }
+        return;
+      }
+
+      if (!/^\d$/.test(event.key)) {
+        event.preventDefault();
+      }
+    });
+
+    field.addEventListener("input", () => {
+      const normalizedValue = sanitizeTimerFieldValue(field.value, maxValue);
+      field.value = normalizedValue;
+
+      if (normalizedValue.length === 2 && index < fields.length - 1) {
+        fields[index + 1].focus();
+        fields[index + 1].select();
+      }
+    });
+
+    field.addEventListener("focus", () => {
+      field.select();
+    });
+  });
 }
 
 function syncWebFilterPanel() {
   const device = activeFilterMac ? devices[activeFilterMac] : null;
-  const blockedWebsites = device ? getWebsiteBlockState(activeFilterMac) : createDefaultWebsiteBlockState();
+  const blockedWebsiteState = device ? getWebsiteBlockState(activeFilterMac) : createDefaultWebsiteBlockState();
 
   if (filterDeviceName) {
     filterDeviceName.textContent = device ? device.hostname : "Select a student";
@@ -114,14 +267,14 @@ function syncWebFilterPanel() {
 
   if (filterDeviceMac) {
     filterDeviceMac.textContent = device
-      ? `${activeFilterMac} • ${device.ip}`
+      ? `${activeFilterMac} - ${device.ip}`
       : "Choose a device card to manage website blocking.";
   }
 
   webFilterToggles.forEach((toggle) => {
     const domain = toggle.dataset.domain;
     toggle.disabled = !device;
-    toggle.checked = Boolean(domain && blockedWebsites[domain]);
+    toggle.checked = Boolean(domain && blockedWebsiteState[domain]);
   });
 }
 
@@ -135,21 +288,6 @@ function closeWebFilterPanel() {
   activeFilterMac = null;
   syncWebFilterPanel();
   webFilterPanel?.classList.remove("open");
-}
-
-function setAdminModeUi(mac, isAdminMode) {
-  if (devices[mac]) {
-    devices[mac].isAdminMode = isAdminMode;
-  }
-
-  const button = document.querySelector(`button[data-admin-toggle-for="${mac}"]`);
-  if (!button) {
-    return;
-  }
-
-  button.classList.toggle("is-admin-on", isAdminMode);
-  button.textContent = isAdminMode ? "Admin On" : "Admin Off";
-  button.title = isAdminMode ? "Admin Mode is enabled. Restrictions are lifted." : "Student Mode is active. Restrictions are enforced.";
 }
 
 function focusRemoteCanvas() {
@@ -167,7 +305,7 @@ async function lockRemoteKeyboard() {
 
   try {
     await navigator.keyboard.lock();
-  } catch (err) {
+  } catch (error) {
     await navigator.keyboard.lock(REMOTE_LOCK_KEYS);
   }
 }
@@ -177,7 +315,6 @@ function getContainedRect(containerWidth, containerHeight, contentWidth, content
   const safeContainerHeight = Math.max(1, containerHeight);
   const safeContentWidth = Math.max(1, contentWidth);
   const safeContentHeight = Math.max(1, contentHeight);
-
   const containerAspect = safeContainerWidth / safeContainerHeight;
   const contentAspect = safeContentWidth / safeContentHeight;
 
@@ -240,7 +377,6 @@ function drawRemoteFrame(imageBitmap) {
 
   rcContext.imageSmoothingEnabled = true;
   rcContext.imageSmoothingQuality = "high";
-
   rcContext.fillStyle = "#000000";
   rcContext.fillRect(0, 0, rcCanvas.width, rcCanvas.height);
   rcContext.drawImage(imageBitmap, 0, 0, rcCanvas.width, rcCanvas.height);
@@ -249,7 +385,6 @@ function drawRemoteFrame(imageBitmap) {
 function resolveRemoteVirtualKey(event) {
   const code = event.code || "";
   const key = event.key || "";
-
   const codeMap = {
     AltLeft: 0xA4,
     AltRight: 0xA5,
@@ -307,11 +442,6 @@ function resolveRemoteVirtualKey(event) {
 
   if (code.startsWith("Numpad")) {
     const suffix = code.slice(6);
-
-    if (/^[0-9]$/.test(suffix)) {
-      return 0x60 + Number(suffix);
-    }
-
     const numpadMap = {
       Add: 0x6B,
       Decimal: 0x6E,
@@ -320,6 +450,10 @@ function resolveRemoteVirtualKey(event) {
       Multiply: 0x6A,
       Subtract: 0x6D
     };
+
+    if (/^[0-9]$/.test(suffix)) {
+      return 0x60 + Number(suffix);
+    }
 
     if (numpadMap[suffix] !== undefined) {
       return numpadMap[suffix];
@@ -379,18 +513,24 @@ async function openRemoteControl(targetMac) {
 
     await lockRemoteKeyboard();
     focusRemoteCanvas();
-  } catch (err) {
-    console.warn("Failed to enable fullscreen keyboard lock:", err);
+  } catch (error) {
+    console.warn("Failed to enable fullscreen keyboard lock:", error);
   }
 
-  if (connection && connection.state === signalR.HubConnectionState.Connected) {
-    await toggleAdminMode(targetMac, true);
+  if (!connection || connection.state !== signalR.HubConnectionState.Connected) {
+    return;
+  }
 
-    try {
-      await connection.invoke("SetStreamQuality", targetMac, "high");
-    } catch (err) {
-      console.error("SetStreamQuality high error:", err);
-    }
+  try {
+    await connection.invoke("SetAdminMode", targetMac, true);
+  } catch (error) {
+    console.error("SetAdminMode high-trust enable error:", error);
+  }
+
+  try {
+    await connection.invoke("SetStreamQuality", targetMac, "high");
+  } catch (error) {
+    console.error("SetStreamQuality high error:", error);
   }
 }
 
@@ -404,18 +544,22 @@ async function closeRemoteControl() {
   if (document.fullscreenElement) {
     try {
       await document.exitFullscreen();
-    } catch (err) {
-      console.warn("Failed to exit fullscreen:", err);
+    } catch (error) {
+      console.warn("Failed to exit fullscreen:", error);
     }
   }
 
   if (targetMac && connection && connection.state === signalR.HubConnectionState.Connected) {
-    await toggleAdminMode(targetMac, false);
+    try {
+      await connection.invoke("SetAdminMode", targetMac, false);
+    } catch (error) {
+      console.error("SetAdminMode disable error:", error);
+    }
 
     try {
       await connection.invoke("SetStreamQuality", targetMac, "low");
-    } catch (err) {
-      console.error("SetStreamQuality low error:", err);
+    } catch (error) {
+      console.error("SetStreamQuality low error:", error);
     }
   }
 
@@ -434,8 +578,8 @@ async function sendRemoteMouseInput(event) {
   }
 
   if (event.type === "mousedown" && document.fullscreenElement) {
-    lockRemoteKeyboard().catch((err) => {
-      console.log("Keyboard lock failed:", err);
+    lockRemoteKeyboard().catch((error) => {
+      console.log("Keyboard lock failed:", error);
     });
   }
 
@@ -466,8 +610,8 @@ async function sendRemoteMouseInput(event) {
 
   try {
     await connection.invoke("SendMouseInput", activeRcMac, event.type, xPct, yPct, event.button);
-  } catch (err) {
-    console.error("SendMouseInput error:", err);
+  } catch (error) {
+    console.error("SendMouseInput error:", error);
   }
 }
 
@@ -482,23 +626,50 @@ async function sendCommand(targetMac, action) {
     if (!wasSent) {
       alert("Device is offline or unreachable.");
     }
-  } catch (err) {
-    console.error("SendCommand error:", err);
+  } catch (error) {
+    console.error("SendCommand error:", error);
     alert("Failed to send command");
   }
 }
 
-async function toggleAdminMode(mac, isAdmin) {
+async function toggleLock(mac) {
   if (!connection || connection.state !== signalR.HubConnectionState.Connected) {
     alert("Not connected to server");
     return;
   }
 
   try {
-    await connection.invoke("ToggleAdminMode", mac, isAdmin);
-    setAdminModeUi(mac, isAdmin);
-  } catch (err) {
-    console.error("ToggleAdminMode error:", err);
+    await connection.invoke("ToggleLock", mac);
+  } catch (error) {
+    console.error("ToggleLock error:", error);
+    alert("Failed to update lock state");
+  }
+}
+
+async function toggleFreeze(mac) {
+  if (!connection || connection.state !== signalR.HubConnectionState.Connected) {
+    alert("Not connected to server");
+    return;
+  }
+
+  try {
+    await connection.invoke("ToggleFreeze", mac);
+  } catch (error) {
+    console.error("ToggleFreeze error:", error);
+    alert("Failed to update freeze state");
+  }
+}
+
+async function toggleAdminMode(mac) {
+  if (!connection || connection.state !== signalR.HubConnectionState.Connected) {
+    alert("Not connected to server");
+    return;
+  }
+
+  try {
+    await connection.invoke("ToggleAdminMode", mac);
+  } catch (error) {
+    console.error("ToggleAdminMode error:", error);
     alert("Failed to update Admin Mode");
   }
 }
@@ -515,161 +686,473 @@ async function toggleWebsiteBlock(domain, isBlocked) {
   await connection.invoke("ToggleWebsiteBlock", activeFilterMac, domain, isBlocked);
 }
 
-function updateDeviceStatus(mac, status) {
-  const isOnline = status.toLowerCase() === "online";
-
-  if (devices[mac]) {
-    devices[mac].status = status;
-    devices[mac].isOnline = isOnline;
-  }
-
-  const card = document.querySelector(`[data-mac="${mac}"]`);
-  if (!card) {
+async function toggleTimer(mac) {
+  if (!connection || connection.state !== signalR.HubConnectionState.Connected) {
+    alert("Not connected to server");
     return;
   }
 
-  if (isOnline) {
-    card.classList.add("is-online");
-  } else {
-    card.classList.remove("is-online");
+  const device = devices[mac];
+  if (device?.timerEndTime) {
+    const previousTimerEndTime = device.timerEndTime;
+    device.timerEndTime = null;
+    refreshDeviceCard(mac);
+
+    try {
+      await connection.invoke("StopTimer", mac);
+    } catch (error) {
+      device.timerEndTime = previousTimerEndTime;
+      refreshDeviceCard(mac);
+      console.error("StopTimer error:", error);
+      alert("Failed to stop timer");
+    }
+    return;
   }
 
-  const badge = card.querySelector(".status-badge");
-  if (badge) {
-    badge.dataset.status = status;
-    badge.textContent = status;
-    badge.classList.remove("online", "offline");
-    badge.classList.add(isOnline ? "online" : "offline");
+  const minutes = readTimerMinutesFromCard(mac);
+  if (!minutes || minutes <= 0) {
+    alert("Set a timer duration greater than 0.");
+    return;
+  }
+
+  try {
+    device.timerEndTime = new Date(Date.now() + (minutes * 60000)).toISOString();
+    refreshDeviceCard(mac);
+    await connection.invoke("SetTimer", mac, minutes);
+  } catch (error) {
+    device.timerEndTime = null;
+    refreshDeviceCard(mac);
+    console.error("SetTimer error:", error);
+    alert("Failed to start timer");
+  }
+}
+
+async function powerOnDevice(mac) {
+  if (!connection || connection.state !== signalR.HubConnectionState.Connected) {
+    alert("Not connected to server");
+    return;
+  }
+
+  try {
+    await connection.invoke("PowerOnDevice", mac);
+  } catch (error) {
+    console.error("PowerOnDevice error:", error);
+    alert("Failed to send Wake-on-LAN packet");
+  }
+}
+
+function updateDeviceStatus(mac, status) {
+  if (!devices[mac]) {
+    refreshDevices().catch((error) => {
+      console.error("Failed to refresh devices after status update:", error);
+    });
+    return;
+  }
+
+  devices[mac].status = status;
+  devices[mac].isOnline = status.toLowerCase() === "online";
+  refreshDeviceCard(mac);
+}
+
+function updateDeviceState(rawDevice) {
+  const mac = rawDevice?.macAddress || rawDevice?.mac;
+  if (!mac) {
+    return;
+  }
+
+  devices[mac] = normalizeDevice(rawDevice, devices[mac]);
+  ensureDeviceCard(mac);
+  refreshDeviceCard(mac);
+  syncWebFilterPanel();
+}
+
+function createTimerSegment(unit, label) {
+  const segment = document.createElement("div");
+  segment.className = "time-field";
+  segment.dataset.timerSegment = unit;
+
+  const value = document.createElement("input");
+  value.type = "text";
+  value.className = `t-in t-${unit === "hours" ? "hh" : unit === "minutes" ? "mm" : "ss"}`;
+  value.dataset.timerValue = unit;
+  value.dataset.maxValue = unit === "hours" ? "23" : "59";
+  value.inputMode = "numeric";
+  value.autocomplete = "off";
+  value.maxLength = 2;
+  value.placeholder = "00";
+
+  const labelText = document.createElement("span");
+  labelText.className = "timer-label";
+  labelText.textContent = label;
+
+  segment.appendChild(value);
+  segment.appendChild(labelText);
+  return segment;
+}
+
+function createActionButton(mac, id, label, iconClass, onClick) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = `btn-action action-btn ${id}`;
+  button.dataset.action = id;
+  button.innerHTML = `<i class="${iconClass}"></i><span>${label}</span>`;
+  button.addEventListener("click", async (event) => {
+    event.stopPropagation();
+    await onClick();
+  });
+  button.dataset.mac = mac;
+  return button;
+}
+
+function createDeviceCard(device) {
+  const card = document.createElement("article");
+  card.className = "computer-card device-card";
+  card.dataset.mac = device.mac;
+
+  const screenContainer = document.createElement("div");
+  screenContainer.className = "screen-preview screen-container";
+
+  const screenFrame = document.createElement("div");
+  screenFrame.className = "screen-frame";
+
+  const canvas = document.createElement("canvas");
+  canvas.id = `canvas-${device.mac}`;
+  canvas.dataset.mac = device.mac;
+  canvas.width = 320;
+  canvas.height = 180;
+
+  const canvasContext = canvas.getContext("2d");
+  if (canvasContext) {
+    canvasContext.fillStyle = "#000000";
+    canvasContext.fillRect(0, 0, canvas.width, canvas.height);
+  }
+
+  screenFrame.appendChild(canvas);
+
+  const statusOverlay = document.createElement("div");
+  statusOverlay.className = "status-overlay-badge status-grey";
+  statusOverlay.dataset.role = "status-overlay";
+  statusOverlay.textContent = "OFFLINE";
+  screenFrame.appendChild(statusOverlay);
+
+  const screenOverlay = document.createElement("div");
+  screenOverlay.className = "screen-overlay";
+
+  const overlayButton = document.createElement("button");
+  overlayButton.type = "button";
+  overlayButton.className = "overlay-button view";
+  overlayButton.title = "Open Remote Control";
+  overlayButton.innerHTML = '<i class="fas fa-eye"></i>';
+  overlayButton.addEventListener("click", async (event) => {
+    event.stopPropagation();
+    await openRemoteControl(device.mac);
+  });
+
+  screenOverlay.appendChild(overlayButton);
+  screenFrame.appendChild(screenOverlay);
+
+  const powerButton = document.createElement("button");
+  powerButton.type = "button";
+  powerButton.className = "btn-poweron";
+  powerButton.dataset.action = "poweron-device";
+  powerButton.innerHTML = '<i class="fas fa-power-off"></i><span>Power On</span>';
+  powerButton.addEventListener("click", async (event) => {
+    event.stopPropagation();
+    await powerOnDevice(device.mac);
+  });
+  screenFrame.appendChild(powerButton);
+
+  const offlineOverlay = document.createElement("div");
+  offlineOverlay.className = "offline-overlay";
+
+  screenContainer.appendChild(screenFrame);
+  screenContainer.appendChild(offlineOverlay);
+
+  const cardInfo = document.createElement("div");
+  cardInfo.className = "card-info";
+
+  const header = document.createElement("div");
+  header.className = "card-header";
+
+  const hostnameElement = document.createElement("div");
+  hostnameElement.className = "card-hostname";
+  hostnameElement.dataset.role = "hostname";
+
+  const headerMeta = document.createElement("div");
+  headerMeta.className = "card-meta";
+
+  const ipElement = document.createElement("div");
+  ipElement.className = "card-ip";
+  ipElement.dataset.role = "ip";
+
+  const statusBadge = document.createElement("div");
+  statusBadge.className = "status-badge";
+  statusBadge.dataset.role = "status";
+
+  header.appendChild(hostnameElement);
+  headerMeta.appendChild(ipElement);
+  headerMeta.appendChild(statusBadge);
+  header.appendChild(headerMeta);
+
+  const timerPanel = document.createElement("div");
+  timerPanel.className = "session-control timer-panel";
+  timerPanel.dataset.role = "timer-panel";
+
+  const idleContainer = document.createElement("div");
+  idleContainer.className = "session-idle";
+  idleContainer.dataset.role = "timer-idle";
+
+  const timeInputGroup = document.createElement("div");
+  timeInputGroup.className = "time-input-group";
+  timeInputGroup.appendChild(createTimerSegment("hours", "HRS"));
+
+  const separatorOne = document.createElement("span");
+  separatorOne.className = "separator";
+  separatorOne.textContent = ":";
+  timeInputGroup.appendChild(separatorOne);
+
+  timeInputGroup.appendChild(createTimerSegment("minutes", "MINS"));
+
+  const separatorTwo = document.createElement("span");
+  separatorTwo.className = "separator";
+  separatorTwo.textContent = ":";
+  timeInputGroup.appendChild(separatorTwo);
+
+  timeInputGroup.appendChild(createTimerSegment("seconds", "SECS"));
+  setupTimerInputGroup(timeInputGroup);
+
+  const timerButton = document.createElement("button");
+  timerButton.type = "button";
+  timerButton.className = "btn btn-success btn-sm timer-cta";
+  timerButton.dataset.action = "timer";
+  timerButton.innerHTML = '<i class="fas fa-play"></i><span>Start</span>';
+  timerButton.addEventListener("click", async (event) => {
+    event.stopPropagation();
+    await toggleTimer(device.mac);
+  });
+
+  idleContainer.appendChild(timeInputGroup);
+  idleContainer.appendChild(timerButton);
+
+  const activeContainer = document.createElement("div");
+  activeContainer.className = "session-active session-hidden";
+  activeContainer.dataset.role = "timer-active";
+
+  const activeButton = document.createElement("button");
+  activeButton.type = "button";
+  activeButton.className = "btn btn-sm btn-timer w-100";
+  activeButton.dataset.action = "timer-active";
+  activeButton.innerHTML = `
+    <span class="timer-countdown" data-role="timer-countdown">00:00:00</span>
+    <span class="timer-stop-overlay"><i class="fas fa-stop-circle"></i> STOP</span>
+  `;
+  activeButton.addEventListener("click", async (event) => {
+    event.stopPropagation();
+    await toggleTimer(device.mac);
+  });
+  activeContainer.appendChild(activeButton);
+
+  timerPanel.appendChild(idleContainer);
+  timerPanel.appendChild(activeContainer);
+
+  const footer = document.createElement("div");
+  footer.className = "action-grid card-footer";
+  footer.appendChild(createActionButton(device.mac, "lock", "Lock", "fas fa-lock", () => toggleLock(device.mac)));
+  footer.appendChild(createActionButton(device.mac, "freeze", "Freeze", "fas fa-snowflake", () => toggleFreeze(device.mac)));
+  footer.appendChild(createActionButton(device.mac, "admin", "Admin", "fas fa-shield-halved", () => toggleAdminMode(device.mac)));
+  footer.appendChild(createActionButton(device.mac, "filter", "Filter", "fas fa-globe", () => {
+    openWebFilterPanel(device.mac);
+    return Promise.resolve();
+  }));
+  footer.appendChild(createActionButton(device.mac, "reboot", "Reboot", "fas fa-rotate-right", () => sendCommand(device.mac, "reboot")));
+  footer.appendChild(createActionButton(device.mac, "poweroff", "Off", "fas fa-power-off", () => sendCommand(device.mac, "poweroff")));
+
+  cardInfo.appendChild(header);
+  cardInfo.appendChild(timerPanel);
+  cardInfo.appendChild(footer);
+
+  card.appendChild(screenContainer);
+  card.appendChild(cardInfo);
+
+  return card;
+}
+
+function getDeviceCard(mac) {
+  return document.querySelector(`.device-card[data-mac="${mac}"]`);
+}
+
+function ensureDeviceCard(mac) {
+  if (!devices[mac]) {
+    return null;
+  }
+
+  let card = getDeviceCard(mac);
+  if (!card) {
+    card = createDeviceCard(devices[mac]);
+    devicesGrid.appendChild(card);
+  }
+
+  return card;
+}
+
+function refreshDeviceCard(mac) {
+  const device = devices[mac];
+  const card = getDeviceCard(mac);
+  if (!device || !card) {
+    return;
+  }
+
+  card.classList.toggle("is-online", device.isOnline);
+  card.classList.toggle("state-online", device.isOnline);
+  card.classList.toggle("state-offline", !device.isOnline);
+  card.classList.toggle("state-locked", device.isLocked);
+  card.classList.toggle("state-frozen", device.isFrozen);
+  card.classList.toggle("state-admin", device.isAdminMode);
+
+  const hostnameElement = card.querySelector('[data-role="hostname"]');
+  if (hostnameElement) {
+    hostnameElement.textContent = device.hostname;
+  }
+
+  const ipElement = card.querySelector('[data-role="ip"]');
+  if (ipElement) {
+    ipElement.textContent = device.ip;
+  }
+
+  const statusBadge = card.querySelector('[data-role="status"]');
+  if (statusBadge) {
+    statusBadge.textContent = device.status;
+    statusBadge.classList.remove("online", "offline");
+    statusBadge.classList.add(device.isOnline ? "online" : "offline");
+  }
+
+  const statusOverlay = card.querySelector('[data-role="status-overlay"]');
+  if (statusOverlay) {
+    let overlayText = "OFFLINE";
+    let overlayClass = "status-grey";
+
+    if (!device.isOnline) {
+      overlayText = "OFFLINE";
+      overlayClass = "status-grey";
+    } else if (device.isLocked) {
+      overlayText = "LOCKED";
+      overlayClass = "status-red";
+    } else if (device.isFrozen) {
+      overlayText = "FROZEN";
+      overlayClass = "status-yellow";
+    } else if (device.timerEndTime) {
+      overlayText = "ACTIVE";
+      overlayClass = "status-blue";
+    } else if (device.isAdminMode) {
+      overlayText = "ADMIN";
+      overlayClass = "status-blue";
+    } else if (device.isOnline) {
+      overlayText = "ONLINE";
+      overlayClass = "status-green";
+    }
+
+    statusOverlay.textContent = overlayText;
+    statusOverlay.className = `status-overlay-badge ${overlayClass}`;
+  }
+
+  const timerPanel = card.querySelector('[data-role="timer-panel"]');
+  const timerIdle = card.querySelector('[data-role="timer-idle"]');
+  const timerActive = card.querySelector('[data-role="timer-active"]');
+  const timerCountdown = card.querySelector('[data-role="timer-countdown"]');
+  if (timerPanel) {
+    const timerParts = getTimerParts(device);
+    timerPanel.classList.toggle("active", timerParts.active);
+
+    if (timerIdle) {
+      timerIdle.classList.toggle("session-hidden", timerParts.active);
+    }
+
+    if (timerActive) {
+      timerActive.classList.toggle("session-hidden", !timerParts.active);
+    }
+
+    if (timerCountdown) {
+      timerCountdown.textContent = `${String(timerParts.hours).padStart(2, "0")}:${String(timerParts.minutes).padStart(2, "0")}:${String(timerParts.seconds).padStart(2, "0")}`;
+    }
+  }
+
+  const lockButton = card.querySelector('[data-action="lock"]');
+  if (lockButton) {
+    lockButton.querySelector("span").textContent = device.isLocked ? "Unlock" : "Lock";
+    lockButton.classList.toggle("toggle-active", device.isLocked);
+  }
+
+  const freezeButton = card.querySelector('[data-action="freeze"]');
+  if (freezeButton) {
+    freezeButton.querySelector("span").textContent = device.isFrozen ? "Unfreeze" : "Freeze";
+    freezeButton.classList.toggle("toggle-active", device.isFrozen);
+  }
+
+  const adminButton = card.querySelector('[data-action="admin"]');
+  if (adminButton) {
+    adminButton.querySelector("span").textContent = device.isAdminMode ? "Admin On" : "Admin";
+    adminButton.classList.toggle("toggle-active", device.isAdminMode);
+  }
+
+  const timerButton = card.querySelector('[data-action="timer"]');
+  if (timerButton) {
+    timerButton.classList.toggle("toggle-active", Boolean(device.timerEndTime));
+    const timerLabel = timerButton.querySelector("span");
+    if (timerLabel) {
+      timerLabel.textContent = device.timerEndTime ? "Clear" : "Start";
+    }
+  }
+
+  const isOffline = !device.isOnline;
+  card.querySelectorAll(".btn-action, .overlay-button, .timer-cta, .btn-timer, .t-in").forEach((element) => {
+    element.disabled = isOffline;
+  });
+
+  const powerButton = card.querySelector('[data-action="poweron-device"]');
+  if (powerButton) {
+    powerButton.disabled = !isOffline;
   }
 }
 
 function renderDeviceCards(deviceList) {
-  devicesGrid.innerHTML = "";
-  const previousDevices = devices;
-  devices = {};
+  const nextDevices = {};
+  if (Array.isArray(deviceList)) {
+    deviceList.forEach((rawDevice) => {
+      const mac = rawDevice?.macAddress || rawDevice?.mac;
+      if (!mac) {
+        return;
+      }
 
-  if (!Array.isArray(deviceList)) {
-    console.warn("UpdateDeviceList payload was not an array.", deviceList);
-    return;
-  }
-
-  for (const device of deviceList) {
-    const mac = device.macAddress || device.mac || "unknown";
-    const hostname = device.hostname || "Unknown";
-    const status = device.status || "Offline";
-    const ip = device.ipAddress || device.ip || "N/A";
-
-    devices[mac] = {
-      mac,
-      hostname,
-      status,
-      ip,
-      isAdminMode: previousDevices[mac]?.isAdminMode ?? false,
-      blockedWebsites: cloneWebsiteBlockState(previousDevices[mac]?.blockedWebsites),
-      isOnline: status.toLowerCase() === "online"
-    };
-
-    const card = document.createElement("article");
-    card.className = "device-card";
-    if (devices[mac].isOnline) {
-      card.classList.add("is-online");
-    }
-    card.dataset.mac = mac;
-
-    const header = document.createElement("div");
-    header.className = "card-header";
-
-    const hostnameElement = document.createElement("div");
-    hostnameElement.className = "card-hostname";
-    hostnameElement.textContent = hostname;
-
-    const statusBadge = document.createElement("div");
-    statusBadge.className = `status-badge ${devices[mac].isOnline ? "online" : "offline"}`;
-    statusBadge.dataset.status = status;
-    statusBadge.textContent = status;
-
-    header.appendChild(hostnameElement);
-    header.appendChild(statusBadge);
-
-    const screenContainer = document.createElement("div");
-    screenContainer.className = "screen-container";
-
-    const screenFrame = document.createElement("div");
-    screenFrame.className = "screen-frame";
-
-    const canvas = document.createElement("canvas");
-    canvas.id = `canvas-${mac}`;
-    canvas.setAttribute("data-mac", mac);
-    canvas.width = 320;
-    canvas.height = 180;
-
-    const ctx = canvas.getContext("2d");
-    if (ctx) {
-      ctx.fillStyle = "#000000";
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-    }
-
-    screenFrame.appendChild(canvas);
-
-    const offlineOverlay = document.createElement("div");
-    offlineOverlay.className = "offline-overlay";
-    offlineOverlay.textContent = "OFFLINE";
-
-    screenContainer.appendChild(screenFrame);
-    screenContainer.appendChild(offlineOverlay);
-
-    const footer = document.createElement("div");
-    footer.className = "card-footer";
-
-    const actions = [
-      { id: "control", label: "Control", action: "control" },
-      { id: "filter", label: "Filter", action: "filter" },
-      { id: "lock", label: "Lock", action: "lock" },
-      { id: "unlock", label: "Unlock", action: "unlock" },
-      { id: "reboot", label: "Reboot", action: "reboot" },
-      { id: "poweroff", label: "Power Off", action: "poweroff" }
-    ];
-
-    actions.forEach(({ id, label, action }) => {
-      const btn = document.createElement("button");
-      btn.className = `action-btn ${id}`;
-      btn.textContent = label;
-      btn.onclick = async (buttonEvent) => {
-        buttonEvent.stopPropagation();
-
-        if (action === "control") {
-          await openRemoteControl(mac);
-          return;
-        }
-
-        if (action === "filter") {
-          openWebFilterPanel(mac);
-          return;
-        }
-
-        sendCommand(mac, action);
-      };
-
-      footer.appendChild(btn);
+      nextDevices[mac] = normalizeDevice(rawDevice, devices[mac]);
     });
-
-    const adminBtn = document.createElement("button");
-    adminBtn.className = "action-btn admin";
-    adminBtn.dataset.adminToggleFor = mac;
-    adminBtn.onclick = async (buttonEvent) => {
-      buttonEvent.stopPropagation();
-      await toggleAdminMode(mac, !devices[mac].isAdminMode);
-    };
-    footer.appendChild(adminBtn);
-    setAdminModeUi(mac, devices[mac].isAdminMode);
-
-    card.appendChild(header);
-    card.appendChild(screenContainer);
-    card.appendChild(footer);
-    devicesGrid.appendChild(card);
   }
 
-  syncWebFilterPanel();
+  devices = nextDevices;
+  devicesGrid.innerHTML = "";
+
+  Object.values(devices).forEach((device) => {
+    const card = createDeviceCard(device);
+    devicesGrid.appendChild(card);
+    refreshDeviceCard(device.mac);
+  });
+
+  if (activeFilterMac && !devices[activeFilterMac]) {
+    closeWebFilterPanel();
+  } else {
+    syncWebFilterPanel();
+  }
+}
+
+function tickTimerBadges() {
+  Object.keys(devices).forEach((mac) => {
+    refreshDeviceCard(mac);
+  });
+}
+
+async function refreshDevices() {
+  const response = await fetch("/api/devices");
+  const deviceList = await response.json();
+  renderDeviceCards(deviceList);
 }
 
 async function beginSignalR() {
@@ -688,12 +1171,21 @@ async function beginSignalR() {
     updateDeviceStatus(mac, status);
   });
 
+  connection.on("DeviceStateChanged", (device) => {
+    updateDeviceState(device);
+  });
+
   connection.onreconnecting((error) => {
     console.log("SignalR reconnecting", error);
   });
 
-  connection.onreconnected(() => {
+  connection.onreconnected(async () => {
     console.log("SignalR reconnected");
+    try {
+      await refreshDevices();
+    } catch (error) {
+      console.error("Failed to refresh devices after reconnect:", error);
+    }
   });
 
   connection.onclose((error) => {
@@ -703,8 +1195,8 @@ async function beginSignalR() {
   try {
     await connection.start();
     console.log("SignalR connected successfully");
-  } catch (err) {
-    console.error("SignalR connection failed:", err);
+  } catch (error) {
+    console.error("SignalR connection failed:", error);
     setTimeout(beginSignalR, 5000);
   }
 }
@@ -720,8 +1212,8 @@ function beginVideoSocket() {
     console.log("WebSocket video stream connected");
   };
 
-  ws.onerror = (err) => {
-    console.error("WebSocket error:", err);
+  ws.onerror = (error) => {
+    console.error("WebSocket error:", error);
   };
 
   ws.onclose = () => {
@@ -746,15 +1238,17 @@ function beginVideoSocket() {
     const macDashed = normalizedMac.match(/.{1,2}/g)?.join("-") ?? normalizedMac;
     const shouldRenderRemote = macDashed === activeRcMac;
 
-    if (!devices[macDashed] || !devices[macDashed].isOnline) {
+    if (!devices[macDashed]) {
       return;
     }
 
-    let canvas = document.querySelector(`canvas[data-mac="${macDashed}"]`);
-    if (!canvas) {
-      canvas = document.querySelector(`#canvas-${macDashed}`);
+    if (!devices[macDashed].isOnline) {
+      devices[macDashed].status = "Online";
+      devices[macDashed].isOnline = true;
+      refreshDeviceCard(macDashed);
     }
 
+    const canvas = document.getElementById(`canvas-${macDashed}`);
     if (!canvas && !shouldRenderRemote) {
       return;
     }
@@ -763,10 +1257,10 @@ function beginVideoSocket() {
       const blob = new Blob([jpegData], { type: "image/jpeg" });
       const imageBitmap = await createImageBitmap(blob);
 
-      if (canvas) {
-        const ctx = canvas.getContext("2d");
-        if (ctx) {
-          ctx.drawImage(imageBitmap, 0, 0, canvas.width, canvas.height);
+      if (canvas instanceof HTMLCanvasElement) {
+        const context = canvas.getContext("2d");
+        if (context) {
+          context.drawImage(imageBitmap, 0, 0, canvas.width, canvas.height);
         }
       }
 
@@ -775,8 +1269,8 @@ function beginVideoSocket() {
       }
 
       imageBitmap.close();
-    } catch (err) {
-      console.warn("Video frame render failed for MAC:", macDashed, err);
+    } catch (error) {
+      console.warn("Video frame render failed for MAC:", macDashed, error);
     }
   };
 }
@@ -785,13 +1279,9 @@ async function startApp() {
   await beginSignalR();
 
   try {
-    const response = await fetch("/api/devices");
-    const deviceList = await response.json();
-    if (Object.keys(devices).length === 0) {
-      renderDeviceCards(deviceList);
-    }
-  } catch (err) {
-    console.error("Failed to fetch initial devices:", err);
+    await refreshDevices();
+  } catch (error) {
+    console.error("Failed to fetch initial devices:", error);
   }
 
   beginVideoSocket();
@@ -822,12 +1312,14 @@ loginSubmit.addEventListener("click", () => {
   startApp();
 });
 
-rcCloseBtn.addEventListener("click", () => {
-  closeRemoteControl().catch((err) => {
-    console.error("Close remote control error:", err);
+rcCloseBtn?.addEventListener("click", () => {
+  closeRemoteControl().catch((error) => {
+    console.error("Close remote control error:", error);
   });
 });
+
 webFilterCloseBtn?.addEventListener("click", closeWebFilterPanel);
+
 webFilterToggles.forEach((toggle) => {
   toggle.addEventListener("change", async (event) => {
     const checkbox = event.currentTarget;
@@ -837,31 +1329,42 @@ webFilterToggles.forEach((toggle) => {
       return;
     }
 
-    if (!activeFilterMac) {
+    if (!activeFilterMac || !devices[activeFilterMac]) {
       checkbox.checked = false;
       return;
     }
 
-    const blockedWebsites = getWebsiteBlockState(activeFilterMac);
-    const previousValue = Boolean(blockedWebsites[domain]);
-    const isBlocked = checkbox.checked;
-    blockedWebsites[domain] = isBlocked;
+    const previousState = { ...getWebsiteBlockState(activeFilterMac) };
+    const nextState = {
+      ...previousState,
+      [domain]: checkbox.checked
+    };
+
+    devices[activeFilterMac].blockedWebsiteState = nextState;
+    devices[activeFilterMac].blockedWebsitesCsv = serializeBlockedWebsiteState(nextState);
+    syncWebFilterPanel();
 
     try {
-      await toggleWebsiteBlock(domain, isBlocked);
+      await toggleWebsiteBlock(domain, checkbox.checked);
+    } catch (error) {
+      devices[activeFilterMac].blockedWebsiteState = previousState;
+      devices[activeFilterMac].blockedWebsitesCsv = serializeBlockedWebsiteState(previousState);
+      checkbox.checked = Boolean(previousState[domain]);
       syncWebFilterPanel();
-    } catch (err) {
-      blockedWebsites[domain] = previousValue;
-      checkbox.checked = previousValue;
-      console.error("ToggleWebsiteBlock error:", err);
+      console.error("ToggleWebsiteBlock error:", error);
       alert("Failed to update website filter");
     }
   });
 });
-["mousemove", "mousedown", "mouseup"].forEach((eventName) => {
-  rcCanvas.addEventListener(eventName, sendRemoteMouseInput);
-});
-rcCanvas.addEventListener("contextmenu", (event) => event.preventDefault());
+
+if (rcCanvas) {
+  ["mousemove", "mousedown", "mouseup"].forEach((eventName) => {
+    rcCanvas.addEventListener(eventName, sendRemoteMouseInput);
+  });
+
+  rcCanvas.addEventListener("contextmenu", (event) => event.preventDefault());
+}
+
 ["keydown", "keyup"].forEach((eventName) => {
   document.addEventListener(eventName, (event) => {
     if (!activeRcMac || !connection || connection.state !== signalR.HubConnectionState.Connected) {
@@ -877,11 +1380,13 @@ rcCanvas.addEventListener("contextmenu", (event) => event.preventDefault());
       return;
     }
 
-    connection.invoke("SendKeyboardInput", activeRcMac, event.type, keyCode).catch((err) => {
-      console.error("SendKeyboardInput error:", err);
+    connection.invoke("SendKeyboardInput", activeRcMac, event.type, keyCode).catch((error) => {
+      console.error("SendKeyboardInput error:", error);
     });
   }, true);
 });
+
+window.setInterval(tickTimerBadges, 1000);
 
 clearRemoteCanvas();
 syncWebFilterPanel();

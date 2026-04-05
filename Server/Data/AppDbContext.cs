@@ -23,6 +23,10 @@ public class AppDbContext : DbContext
             entity.Property(d => d.MacAddress).IsRequired();
             entity.Property(d => d.IpAddress).IsRequired();
             entity.Property(d => d.Hostname).IsRequired();
+            entity.Property(d => d.IsLocked).HasDefaultValue(false);
+            entity.Property(d => d.IsFrozen).HasDefaultValue(false);
+            entity.Property(d => d.IsAdminMode).HasDefaultValue(false);
+            entity.Property(d => d.BlockedWebsites).HasDefaultValue(string.Empty);
         });
 
         modelBuilder.Entity<Rule>(entity =>

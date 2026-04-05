@@ -1,6 +1,10 @@
 using System.Net.WebSockets;
 using System.Text;
 using System.Collections.Concurrent;
+using ClassroomController.Server.Data;
+using ClassroomController.Server.Hubs;
+using Microsoft.AspNetCore.SignalR;
+using Microsoft.EntityFrameworkCore;
 
 namespace ClassroomController.Server.Middleware;
 
@@ -9,15 +13,33 @@ public class StreamRelayMiddleware
     private readonly RequestDelegate _next;
     private readonly IConfiguration _configuration;
     private readonly ILogger<StreamRelayMiddleware> _logger;
+    private readonly IServiceScopeFactory _scopeFactory;
+    private readonly IHubContext<CommandHub> _hubContext;
 
     // Map teacher connections by a unique socket id so refreshes do not clobber active sockets.
     private static readonly ConcurrentDictionary<string, WebSocket> _teacherSockets = new();
+    private static readonly ConcurrentDictionary<string, int> _studentStreamCounts = new();
 
-    public StreamRelayMiddleware(RequestDelegate next, IConfiguration configuration, ILogger<StreamRelayMiddleware> logger)
+    public StreamRelayMiddleware(
+        RequestDelegate next,
+        IConfiguration configuration,
+        ILogger<StreamRelayMiddleware> logger,
+        IServiceScopeFactory scopeFactory,
+        IHubContext<CommandHub> hubContext)
     {
         _next = next;
         _configuration = configuration;
         _logger = logger;
+        _scopeFactory = scopeFactory;
+        _hubContext = hubContext;
+    }
+
+    public static bool IsStudentStreamConnected(string macAddress)
+    {
+        var normalizedMac = NormalizeMac(macAddress);
+        return !string.IsNullOrWhiteSpace(normalizedMac)
+            && _studentStreamCounts.TryGetValue(normalizedMac, out var count)
+            && count > 0;
     }
 
     public async Task InvokeAsync(HttpContext context)
@@ -91,6 +113,9 @@ public class StreamRelayMiddleware
 
         if (role == "student")
         {
+            var normalizedStudentMac = NormalizeMac(ident);
+            _studentStreamCounts.AddOrUpdate(normalizedStudentMac, 1, (_, count) => count + 1);
+            await UpdateStudentStatusAsync(normalizedStudentMac, "Online");
             _logger.LogInformation("[Stream] Student {StudentId} connected", ident);
             
             try
@@ -158,6 +183,13 @@ public class StreamRelayMiddleware
             }
             finally
             {
+                _studentStreamCounts.AddOrUpdate(normalizedStudentMac, 0, (_, count) => Math.Max(0, count - 1));
+                if (_studentStreamCounts.TryGetValue(normalizedStudentMac, out var remainingCount) && remainingCount <= 0)
+                {
+                    _studentStreamCounts.TryRemove(normalizedStudentMac, out _);
+                }
+
+                await UpdateStudentStatusAsync(normalizedStudentMac, "Offline");
                 _logger.LogInformation("[Stream] Student {StudentId} disconnected", ident);
                 // no persistent student mapping required for dumb relay
             }
@@ -168,4 +200,40 @@ public class StreamRelayMiddleware
         // invalid role
         await socket.CloseAsync(WebSocketCloseStatus.PolicyViolation, "Invalid role", CancellationToken.None);
     }
+
+    private async Task UpdateStudentStatusAsync(string normalizedMac, string requestedStatus)
+    {
+        if (string.IsNullOrWhiteSpace(normalizedMac))
+        {
+            return;
+        }
+
+        var effectiveStatus = requestedStatus;
+        if (requestedStatus.Equals("Offline", StringComparison.OrdinalIgnoreCase)
+            && CommandHub.IsDeviceConnected(normalizedMac))
+        {
+            effectiveStatus = "Online";
+        }
+
+        using var scope = _scopeFactory.CreateScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var device = await dbContext.Devices.FirstOrDefaultAsync(d => d.MacAddress.ToUpper() == normalizedMac);
+        if (device == null)
+        {
+            _logger.LogWarning("[Stream] Unable to update status for unknown student {StudentId}", normalizedMac);
+            return;
+        }
+
+        if (string.Equals(device.Status, effectiveStatus, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        device.Status = effectiveStatus;
+        await dbContext.SaveChangesAsync();
+        await _hubContext.Clients.All.SendAsync("DeviceStatusChanged", normalizedMac, effectiveStatus);
+        _logger.LogInformation("[Stream] Student {StudentId} status set to {Status} from stream activity", normalizedMac, effectiveStatus);
+    }
+
+    private static string NormalizeMac(string? macAddress) => macAddress?.Trim().ToUpperInvariant() ?? string.Empty;
 }

@@ -1,6 +1,7 @@
 using System.Net.WebSockets;
 using System.Text;
 using System.Windows;
+using System.Globalization;
 using Microsoft.AspNetCore.SignalR.Client;
 using ClassroomController.Client.Utils;
 using ClassroomController.Client.Execution;
@@ -28,27 +29,24 @@ public class ConnectionManager
     public async Task StartAsync(CancellationToken cancellationToken)
     {
         // SignalR connection
-        var hubUrl = $"{_configService.ServerUrl}/commandhub?key={Uri.EscapeDataString(_configService.MasterKey)}";
+        var hubUrl =
+            $"{_configService.ServerUrl}/commandhub?key={Uri.EscapeDataString(_configService.MasterKey)}&mac={Uri.EscapeDataString(_realMacAddress)}";
         Logger.Log($"Attempting to connect to SignalR at {hubUrl}...");
         _hubConnection = new HubConnectionBuilder()
             .WithUrl(hubUrl)
             .WithAutomaticReconnect()
             .Build();
 
-        _hubConnection.On<string>("LockScreen", (targetMac) =>
+        _hubConnection.On("ReceiveLock", () =>
         {
-            if (targetMac == _realMacAddress)
-            {
-                Logger.Log("LockScreen event received for this client.");
-            }
+            Logger.Log("ReceiveLock received.");
+            System.Windows.Application.Current.Dispatcher.Invoke(SystemController.LockScreen);
         });
 
-        _hubConnection.On<string>("UnlockScreen", (targetMac) =>
+        _hubConnection.On("ReceiveUnlock", () =>
         {
-            if (targetMac == _realMacAddress)
-            {
-                Logger.Log("UnlockScreen event received for this client.");
-            }
+            Logger.Log("ReceiveUnlock received.");
+            System.Windows.Application.Current.Dispatcher.Invoke(SystemController.UnlockScreen);
         });
 
         // Register listener for command execution (replaces old handlers above)
@@ -67,6 +65,46 @@ public class ConnectionManager
         {
             SystemController.HandleKeyboardInput(eventType, keyCode);
         });
+
+        _hubConnection.On<bool>("ReceiveFreezeUpdate", isFrozen =>
+        {
+            Logger.Log($"ReceiveFreezeUpdate received: isFrozen={isFrozen}");
+            if (isFrozen)
+            {
+                SystemController.StartSoftLock();
+            }
+            else
+            {
+                SystemController.StopSoftLock();
+            }
+        });
+
+        _hubConnection.On<string?>("ReceiveStartTimer", timerEndTime =>
+        {
+            Logger.Log($"ReceiveStartTimer received: timerEndTime={timerEndTime}");
+            if (DateTime.TryParse(timerEndTime, null, DateTimeStyles.RoundtripKind, out var parsedTimerEnd))
+            {
+                SystemController.StartTimer(parsedTimerEnd.ToUniversalTime() - DateTime.UtcNow);
+            }
+            else
+            {
+                Logger.Log($"ReceiveStartTimer ignored invalid timerEndTime '{timerEndTime}'");
+            }
+        });
+
+        _hubConnection.On("ReceiveStopTimer", () =>
+        {
+            Logger.Log("ReceiveStopTimer received.");
+            SystemController.StopTimer();
+        });
+
+        _hubConnection.On<bool, bool, bool, DateTime?, string>("SyncState",
+            (isLocked, isFrozen, isAdminMode, timerEndTime, blockedWebsites) =>
+            {
+                Logger.Log(
+                    $"SyncState received: lock={isLocked}, freeze={isFrozen}, admin={isAdminMode}, timerEnd={timerEndTime?.ToString("O") ?? "null"}, blockedWebsites={blockedWebsites}");
+                SystemController.ApplySyncState(isLocked, isFrozen, isAdminMode, timerEndTime, blockedWebsites);
+            });
 
         _hubConnection.On<string>("SetStreamQuality", (quality) =>
         {
@@ -168,6 +206,18 @@ public class ConnectionManager
         {
             if (_hubConnection != null)
             {
+                if (_hubConnection.State == HubConnectionState.Connected)
+                {
+                    try
+                    {
+                        await _hubConnection.InvokeAsync("UpdateStatus", _realMacAddress, "Offline");
+                    }
+                    catch (Exception ex)
+                    {
+                        Logger.Log($"Failed to send Offline status during shutdown: {ex.Message}");
+                    }
+                }
+
                 await _hubConnection.StopAsync();
             }
             if (_webSocket != null)
@@ -311,6 +361,33 @@ public class ConnectionManager
                 {
                     SystemController.ShowMessage(payload);
                 });
+                break;
+
+            case "startsoftlock":
+                SystemController.StartSoftLock();
+                break;
+
+            case "stopsoftlock":
+                SystemController.StopSoftLock();
+                break;
+
+            case "starttimer":
+                if (int.TryParse(payload, out var minutes) && minutes > 0)
+                {
+                    SystemController.StartTimer(minutes);
+                }
+                else if (DateTime.TryParse(payload, null, DateTimeStyles.RoundtripKind, out var parsedTimerEnd))
+                {
+                    SystemController.StartTimer(parsedTimerEnd.ToUniversalTime() - DateTime.UtcNow);
+                }
+                else
+                {
+                    Logger.Log($"HandleCommand: Invalid timer payload '{payload}'");
+                }
+                break;
+
+            case "stoptimer":
+                SystemController.StopTimer();
                 break;
 
             default:

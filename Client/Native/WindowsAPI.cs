@@ -4,6 +4,8 @@ namespace ClassroomController.Client.Native;
 
 public static class WindowsAPI
 {
+    public const int INPUT_MOUSE = 0;
+    public const int INPUT_KEYBOARD = 1;
     public const int HC_ACTION = 0;
     public const int WH_KEYBOARD_LL = 13;
     public const int WM_KEYDOWN = 0x0100;
@@ -15,8 +17,12 @@ public static class WindowsAPI
     public const uint KEYEVENTF_KEYDOWN = 0x0000;
     public const uint KEYEVENTF_EXTENDEDKEY = 0x0001;
     public const uint KEYEVENTF_KEYUP = 0x0002;
+    public const uint MOUSEEVENTF_MOVE = 0x0001;
+    public const uint MOUSEEVENTF_ABSOLUTE = 0x8000;
     public const uint MOUSEEVENTF_LEFTDOWN = 0x02;
     public const uint MOUSEEVENTF_LEFTUP = 0x04;
+    public const uint MOUSEEVENTF_RIGHTDOWN = 0x08;
+    public const uint MOUSEEVENTF_RIGHTUP = 0x10;
     public const uint VK_CONTROL = 0x11;
     public const uint VK_ESCAPE = 0x1B;
     public const uint VK_TAB = 0x09;
@@ -38,15 +44,6 @@ public static class WindowsAPI
     public static extern uint SendInput(uint nInputs, INPUT[] pInputs, int cbSize);
 
     [DllImport("user32.dll", SetLastError = true)]
-    public static extern bool SetCursorPos(int x, int y);
-
-    [DllImport("user32.dll", SetLastError = true)]
-    public static extern void mouse_event(uint dwFlags, uint dx, uint dy, uint cButtons, uint dwExtraInfo);
-
-    [DllImport("user32.dll", SetLastError = true)]
-    public static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, int dwExtraInfo);
-
-    [DllImport("user32.dll", SetLastError = true)]
     public static extern uint MapVirtualKey(uint uCode, uint uMapType);
 
     [DllImport("user32.dll", SetLastError = true)]
@@ -54,6 +51,9 @@ public static class WindowsAPI
 
     [DllImport("kernel32.dll", CharSet = CharSet.Auto, SetLastError = true)]
     public static extern IntPtr GetModuleHandle(string? lpModuleName);
+
+    [DllImport("gdi32.dll", SetLastError = true)]
+    public static extern bool DeleteObject(IntPtr hObject);
 
     public delegate IntPtr HookProc(int nCode, IntPtr wParam, IntPtr lParam);
 

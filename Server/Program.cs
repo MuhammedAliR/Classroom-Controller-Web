@@ -83,7 +83,8 @@ using (var scope = app.Services.CreateScope())
                             MacAddress = c.Mac,
                             IpAddress = c.Ip,
                             Hostname = c.Hostname,
-                            Status = "Offline"
+                            Status = "Offline",
+                            BlockedWebsites = string.Empty
                         });
                     }
                     else
@@ -110,6 +111,11 @@ using (var scope = app.Services.CreateScope())
     foreach (var device in allDevices)
     {
         device.Status = "Offline";
+        if (device.TimerEndTime.HasValue && device.TimerEndTime.Value <= DateTime.UtcNow)
+        {
+            device.IsLocked = true;
+            device.TimerEndTime = null;
+        }
     }
     db.SaveChanges();
     app.Logger.LogInformation("Server startup: all devices set to Offline for clean state.");
@@ -121,7 +127,27 @@ app.MapHub<CommandHub>("/commandhub");
 app.UseMiddleware<StreamRelayMiddleware>();
 
 app.MapGet("/api/devices", async (AppDbContext db) =>
-    await db.Devices.AsNoTracking().ToListAsync());
+{
+    var devices = await db.Devices.ToListAsync();
+    var hasChanges = false;
+
+    foreach (var device in devices)
+    {
+        if (device.TimerEndTime.HasValue && device.TimerEndTime.Value <= DateTime.UtcNow)
+        {
+            device.IsLocked = true;
+            device.TimerEndTime = null;
+            hasChanges = true;
+        }
+    }
+
+    if (hasChanges)
+    {
+        await db.SaveChangesAsync();
+    }
+
+    return devices;
+});
 
 app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
 
