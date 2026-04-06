@@ -1,20 +1,20 @@
 using System.Windows;
 using System.Windows.Threading;
-using ClassroomController.Client.Execution;
 
 namespace ClassroomController.Client.UI;
 
 public partial class TimerWindow : Window
 {
     private readonly DispatcherTimer _timer;
-    private TimeSpan _remaining;
+    private int _remainingSeconds;
     private bool _isClosingForCompletion;
+    public event Action? TimerFinished;
 
-    public TimerWindow(TimeSpan remaining)
+    public TimerWindow(int totalSeconds)
     {
         InitializeComponent();
 
-        _remaining = remaining < TimeSpan.Zero ? TimeSpan.Zero : remaining;
+        _remainingSeconds = Math.Max(0, totalSeconds);
         _timer = new DispatcherTimer
         {
             Interval = TimeSpan.FromSeconds(1)
@@ -46,20 +46,26 @@ public partial class TimerWindow : Window
 
     private void OnTimerTick(object? sender, EventArgs e)
     {
-        _remaining = _remaining.Subtract(TimeSpan.FromSeconds(1));
+        if (_remainingSeconds > 0)
+        {
+            _remainingSeconds--;
+        }
+
         UpdateText();
 
-        if (_remaining <= TimeSpan.Zero && !_isClosingForCompletion)
+        if (_remainingSeconds <= 0 && !_isClosingForCompletion)
         {
             _timer.Stop();
             _isClosingForCompletion = true;
+            TimerFinished?.Invoke();
             Close();
-            SystemController.LockScreen();
         }
     }
 
     private void UpdateText()
     {
-        TimeText.Text = $"{Math.Max(0, (int)_remaining.TotalMinutes):00}:{Math.Max(0, _remaining.Seconds):00}";
+        var minutes = Math.Max(0, _remainingSeconds / 60);
+        var seconds = Math.Max(0, _remainingSeconds % 60);
+        TimeText.Text = $"{minutes:00}:{seconds:00}";
     }
 }

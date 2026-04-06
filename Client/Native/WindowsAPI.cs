@@ -12,6 +12,9 @@ public static class WindowsAPI
     public const int WM_KEYUP = 0x0101;
     public const int WM_SYSKEYDOWN = 0x0104;
     public const int WM_SYSKEYUP = 0x0105;
+    public const uint WM_SETTINGCHANGE = 0x001A;
+    public static readonly IntPtr HWND_BROADCAST = new(0xFFFF);
+    public const uint SMTO_ABORTIFHUNG = 0x0002;
     public const uint LLKHF_INJECTED = 0x00000010;
     public const uint LLKHF_ALTDOWN = 0x00000020;
     public const uint KEYEVENTF_KEYDOWN = 0x0000;
@@ -54,6 +57,16 @@ public static class WindowsAPI
 
     [DllImport("gdi32.dll", SetLastError = true)]
     public static extern bool DeleteObject(IntPtr hObject);
+
+    [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+    public static extern IntPtr SendMessageTimeout(
+        IntPtr hWnd,
+        uint Msg,
+        IntPtr wParam,
+        string? lParam,
+        uint fuFlags,
+        uint uTimeout,
+        out IntPtr lpdwResult);
 
     public delegate IntPtr HookProc(int nCode, IntPtr wParam, IntPtr lParam);
 

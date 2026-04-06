@@ -10,6 +10,7 @@ namespace ClassroomController.Client.Network;
 
 public class ConnectionManager
 {
+    private static ConnectionManager? _current;
     private string _realMacAddress;
     private string _realMacAddressNoDashes;
     private HubConnection? _hubConnection;
@@ -23,6 +24,7 @@ public class ConnectionManager
         _configService = configService;
         _realMacAddress = NetworkUtils.GetActiveMacAddress();
         _realMacAddressNoDashes = _realMacAddress.Replace("-", "");
+        _current = this;
         Logger.Log($"MAC Address: {_realMacAddress}");
     }
 
@@ -79,17 +81,10 @@ public class ConnectionManager
             }
         });
 
-        _hubConnection.On<string?>("ReceiveStartTimer", timerEndTime =>
+        _hubConnection.On<int>("ReceiveStartTimer", totalSeconds =>
         {
-            Logger.Log($"ReceiveStartTimer received: timerEndTime={timerEndTime}");
-            if (DateTime.TryParse(timerEndTime, null, DateTimeStyles.RoundtripKind, out var parsedTimerEnd))
-            {
-                SystemController.StartTimer(parsedTimerEnd.ToUniversalTime() - DateTime.UtcNow);
-            }
-            else
-            {
-                Logger.Log($"ReceiveStartTimer ignored invalid timerEndTime '{timerEndTime}'");
-            }
+            Logger.Log($"ReceiveStartTimer received: totalSeconds={totalSeconds}");
+            SystemController.StartTimer(totalSeconds);
         });
 
         _hubConnection.On("ReceiveStopTimer", () =>
@@ -98,12 +93,12 @@ public class ConnectionManager
             SystemController.StopTimer();
         });
 
-        _hubConnection.On<bool, bool, bool, DateTime?, string>("SyncState",
-            (isLocked, isFrozen, isAdminMode, timerEndTime, blockedWebsites) =>
+        _hubConnection.On<bool, bool, bool, int?, string>("SyncState",
+            (isLocked, isFrozen, isAdminMode, timerRemainingSeconds, blockedWebsites) =>
             {
                 Logger.Log(
-                    $"SyncState received: lock={isLocked}, freeze={isFrozen}, admin={isAdminMode}, timerEnd={timerEndTime?.ToString("O") ?? "null"}, blockedWebsites={blockedWebsites}");
-                SystemController.ApplySyncState(isLocked, isFrozen, isAdminMode, timerEndTime, blockedWebsites);
+                    $"SyncState received: lock={isLocked}, freeze={isFrozen}, admin={isAdminMode}, timerSeconds={timerRemainingSeconds?.ToString() ?? "null"}, blockedWebsites={blockedWebsites}");
+                SystemController.ApplySyncState(isLocked, isFrozen, isAdminMode, timerRemainingSeconds, blockedWebsites);
             });
 
         _hubConnection.On<string>("SetStreamQuality", (quality) =>
@@ -229,6 +224,32 @@ public class ConnectionManager
         {
             SystemController.RestoreLockPoliciesAndInput();
             SystemController.EnforceStudentMode(false);
+        }
+    }
+
+    public static async Task NotifyTimerExpired()
+    {
+        var current = _current;
+        if (current?._hubConnection == null)
+        {
+            Logger.Log("NotifyTimerExpired skipped because SignalR is not initialized.");
+            return;
+        }
+
+        if (current._hubConnection.State != HubConnectionState.Connected)
+        {
+            Logger.Log("NotifyTimerExpired skipped because SignalR is not connected.");
+            return;
+        }
+
+        try
+        {
+            Logger.Log("NotifyTimerExpired invoking hub method.");
+            await current._hubConnection.InvokeAsync("TimerExpired");
+        }
+        catch (Exception ex)
+        {
+            Logger.Log($"NotifyTimerExpired failed: {ex.Message}");
         }
     }
 
@@ -374,11 +395,11 @@ public class ConnectionManager
             case "starttimer":
                 if (int.TryParse(payload, out var minutes) && minutes > 0)
                 {
-                    SystemController.StartTimer(minutes);
+                    SystemController.StartTimer((int)Math.Ceiling(TimeSpan.FromMinutes(minutes).TotalSeconds));
                 }
                 else if (DateTime.TryParse(payload, null, DateTimeStyles.RoundtripKind, out var parsedTimerEnd))
                 {
-                    SystemController.StartTimer(parsedTimerEnd.ToUniversalTime() - DateTime.UtcNow);
+                    SystemController.StartTimer((int)Math.Ceiling((parsedTimerEnd.ToUniversalTime() - DateTime.UtcNow).TotalSeconds));
                 }
                 else
                 {

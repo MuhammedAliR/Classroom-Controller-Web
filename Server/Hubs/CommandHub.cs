@@ -278,7 +278,8 @@ public class CommandHub : Hub
             return;
         }
 
-        device.TimerEndTime = DateTime.UtcNow.AddMinutes(minutes);
+        var totalSeconds = Math.Max(1, (int)Math.Ceiling(minutes * 60d));
+        device.TimerEndTime = DateTime.UtcNow.AddSeconds(totalSeconds);
         device.IsLocked = false;
         device.IsFrozen = false;
         await _dbContext.SaveChangesAsync();
@@ -287,10 +288,10 @@ public class CommandHub : Hub
         {
             await Clients.Client(connectionId).SendAsync("ReceiveUnlock");
             await Clients.Client(connectionId).SendAsync("ReceiveFreezeUpdate", false);
-            await Clients.Client(connectionId).SendAsync("ReceiveStartTimer", device.TimerEndTime?.ToString("O"));
+            await Clients.Client(connectionId).SendAsync("ReceiveStartTimer", totalSeconds);
         }
 
-        await BroadcastDeviceStateAsync(device);
+        await BroadcastDeviceStateAsync(device, totalSeconds);
     }
 
     public async Task PowerOnDevice(string targetMac)
@@ -466,6 +467,37 @@ public class CommandHub : Hub
         await BroadcastDeviceStateAsync(device);
     }
 
+    public async Task TimerExpired()
+    {
+        var normalizedMac = ConnectedClients.FirstOrDefault(kvp => kvp.Value == Context.ConnectionId).Key;
+        if (string.IsNullOrWhiteSpace(normalizedMac))
+        {
+            _logger.LogWarning("[Hub] TimerExpired ignored for unknown connection {ConnectionId}", Context.ConnectionId);
+            return;
+        }
+
+        var device = await _dbContext.Devices.FirstOrDefaultAsync(d => d.MacAddress.ToUpper() == normalizedMac);
+        if (device == null)
+        {
+            _logger.LogWarning("[Hub] TimerExpired ignored for missing device {MacAddress}", normalizedMac);
+            return;
+        }
+
+        // Ignore stale expiry callbacks if the timer was already cleared by another action.
+        if (!device.TimerEndTime.HasValue)
+        {
+            _logger.LogInformation("[Hub] TimerExpired ignored for {MacAddress} because no active timer remains", normalizedMac);
+            return;
+        }
+
+        device.IsLocked = true;
+        device.TimerEndTime = null;
+        await _dbContext.SaveChangesAsync();
+
+        await Clients.Caller.SendAsync("ReceiveLock");
+        await BroadcastDeviceStateAsync(device);
+    }
+
     private async Task<Device?> GetDeviceAsync(string normalizedTargetMac)
     {
         var device = await _dbContext.Devices.FirstOrDefaultAsync(d => d.MacAddress.ToUpper() == normalizedTargetMac);
@@ -490,13 +522,20 @@ public class CommandHub : Hub
             device.IsLocked,
             device.IsFrozen,
             device.IsAdminMode,
-            device.TimerEndTime,
+            device.TimerRemainingSeconds,
             device.BlockedWebsites);
     }
 
-    private async Task BroadcastDeviceStateAsync(Device device)
+    private async Task BroadcastDeviceStateAsync(Device device, int? timerRemainingSecondsOverride = null)
     {
         await Clients.All.SendAsync("DeviceStateChanged", device);
+        await Clients.All.SendAsync(
+            "UpdateDeviceState",
+            device.MacAddress,
+            device.IsLocked,
+            device.IsFrozen,
+            device.IsAdminMode,
+            GetRemainingTimerSeconds(device, timerRemainingSecondsOverride));
     }
 
     private static string NormalizeMac(string? macAddress) => macAddress?.Trim().ToUpperInvariant() ?? string.Empty;
@@ -541,6 +580,11 @@ public class CommandHub : Hub
         }
 
         return hasChanges;
+    }
+
+    private static int? GetRemainingTimerSeconds(Device device, int? timerRemainingSecondsOverride = null)
+    {
+        return timerRemainingSecondsOverride ?? device.TimerRemainingSeconds;
     }
 
     private static async Task SendWakeOnLanAsync(string macAddress, string ipAddress)

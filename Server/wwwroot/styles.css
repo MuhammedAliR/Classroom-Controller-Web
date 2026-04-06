@@ -389,6 +389,22 @@ input {
   color: #ff8a8a;
 }
 
+.status-badge.locked {
+  background: rgba(239, 68, 68, 0.18);
+  color: #ff8a8a;
+}
+
+.status-badge.frozen {
+  background: rgba(245, 158, 11, 0.18);
+  color: #ffd27a;
+}
+
+.status-badge.timer,
+.status-badge.admin {
+  background: rgba(59, 130, 246, 0.18);
+  color: #8fc4ff;
+}
+
 .session-control,
 .timer-panel {
   background: rgba(26, 36, 54, 0.9);

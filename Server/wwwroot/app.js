@@ -119,12 +119,35 @@ function normalizeTimerEndTime(value) {
   return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
 }
 
+function normalizeTimerRemainingSeconds(value, fallbackTimerEndTime = null) {
+  if (value == null || value === "") {
+    if (!fallbackTimerEndTime) {
+      return null;
+    }
+
+    const remainingSeconds = Math.ceil((new Date(fallbackTimerEndTime).getTime() - Date.now()) / 1000);
+    return remainingSeconds >= 0 ? remainingSeconds : null;
+  }
+
+  const parsed = Number.parseInt(String(value), 10);
+  if (Number.isNaN(parsed) || parsed < 0) {
+    return null;
+  }
+
+  return parsed;
+}
+
 function normalizeDevice(rawDevice, previousDevice) {
   const mac = rawDevice?.macAddress || rawDevice?.mac || previousDevice?.mac || "unknown";
   const blockedWebsitesCsv = typeof rawDevice?.blockedWebsites === "string"
     ? rawDevice.blockedWebsites
     : previousDevice?.blockedWebsitesCsv || "";
   const status = rawDevice?.status || previousDevice?.status || "Offline";
+  const timerEndTime = normalizeTimerEndTime(rawDevice?.timerEndTime ?? previousDevice?.timerEndTime);
+  const timerRemainingSeconds = normalizeTimerRemainingSeconds(
+    rawDevice?.timerRemainingSeconds !== undefined ? rawDevice.timerRemainingSeconds : previousDevice?.timerRemainingSeconds,
+    timerEndTime
+  );
 
   return {
     mac,
@@ -135,7 +158,8 @@ function normalizeDevice(rawDevice, previousDevice) {
     isLocked: Boolean(rawDevice?.isLocked ?? previousDevice?.isLocked),
     isFrozen: Boolean(rawDevice?.isFrozen ?? previousDevice?.isFrozen),
     isAdminMode: Boolean(rawDevice?.isAdminMode ?? previousDevice?.isAdminMode),
-    timerEndTime: normalizeTimerEndTime(rawDevice?.timerEndTime ?? previousDevice?.timerEndTime),
+    timerEndTime,
+    timerRemainingSeconds,
     blockedWebsitesCsv,
     blockedWebsiteState: parseBlockedWebsitesCsv(blockedWebsitesCsv)
   };
@@ -149,19 +173,15 @@ function getWebsiteBlockState(mac) {
   return devices[mac].blockedWebsiteState;
 }
 
-function getTimerRemainingMs(device) {
-  if (!device?.timerEndTime) {
-    return null;
-  }
-
-  return new Date(device.timerEndTime).getTime() - Date.now();
+function getTimerRemainingSeconds(device) {
+  return typeof device?.timerRemainingSeconds === "number" ? device.timerRemainingSeconds : null;
 }
 
-function formatRemainingTime(ms) {
-  const totalSeconds = Math.max(0, Math.ceil(ms / 1000));
-  const hours = Math.floor(totalSeconds / 3600);
-  const minutes = Math.floor((totalSeconds % 3600) / 60);
-  const seconds = totalSeconds % 60;
+function formatRemainingTime(totalSeconds) {
+  const safeSeconds = Math.max(0, totalSeconds ?? 0);
+  const hours = Math.floor(safeSeconds / 3600);
+  const minutes = Math.floor((safeSeconds % 3600) / 60);
+  const seconds = safeSeconds % 60;
 
   if (hours > 0) {
     return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
@@ -171,26 +191,25 @@ function formatRemainingTime(ms) {
 }
 
 function getTimerBadgeConfig(device) {
-  const remainingMs = getTimerRemainingMs(device);
-  if (remainingMs == null) {
+  const remainingSeconds = getTimerRemainingSeconds(device);
+  if (remainingSeconds == null) {
     return { text: "Timer: Off", active: false };
   }
 
   return {
-    text: `Timer: ${formatRemainingTime(remainingMs)}`,
-    active: remainingMs > 0
+    text: `Timer: ${formatRemainingTime(remainingSeconds)}`,
+    active: true
   };
 }
 
 function getTimerParts(device) {
-  const remainingMs = getTimerRemainingMs(device);
-  const totalSeconds = Math.max(0, Math.ceil((remainingMs ?? 0) / 1000));
+  const totalSeconds = Math.max(0, getTimerRemainingSeconds(device) ?? 0);
 
   return {
     hours: Math.floor(totalSeconds / 3600),
     minutes: Math.floor((totalSeconds % 3600) / 60),
     seconds: totalSeconds % 60,
-    active: remainingMs != null
+    active: getTimerRemainingSeconds(device) != null
   };
 }
 
@@ -693,14 +712,17 @@ async function toggleTimer(mac) {
   }
 
   const device = devices[mac];
-  if (device?.timerEndTime) {
+  if (device?.timerRemainingSeconds != null) {
+    const previousTimerRemainingSeconds = device.timerRemainingSeconds;
     const previousTimerEndTime = device.timerEndTime;
+    device.timerRemainingSeconds = null;
     device.timerEndTime = null;
     refreshDeviceCard(mac);
 
     try {
       await connection.invoke("StopTimer", mac);
     } catch (error) {
+      device.timerRemainingSeconds = previousTimerRemainingSeconds;
       device.timerEndTime = previousTimerEndTime;
       refreshDeviceCard(mac);
       console.error("StopTimer error:", error);
@@ -715,12 +737,26 @@ async function toggleTimer(mac) {
     return;
   }
 
+  const totalSeconds = Math.max(1, Math.ceil(minutes * 60));
+  const previousState = {
+    isLocked: Boolean(device?.isLocked),
+    isFrozen: Boolean(device?.isFrozen),
+    timerRemainingSeconds: device?.timerRemainingSeconds ?? null,
+    timerEndTime: device?.timerEndTime ?? null
+  };
+
   try {
-    device.timerEndTime = new Date(Date.now() + (minutes * 60000)).toISOString();
+    device.isLocked = false;
+    device.isFrozen = false;
+    device.timerRemainingSeconds = totalSeconds;
+    device.timerEndTime = null;
     refreshDeviceCard(mac);
     await connection.invoke("SetTimer", mac, minutes);
   } catch (error) {
-    device.timerEndTime = null;
+    device.isLocked = previousState.isLocked;
+    device.isFrozen = previousState.isFrozen;
+    device.timerRemainingSeconds = previousState.timerRemainingSeconds;
+    device.timerEndTime = previousState.timerEndTime;
     refreshDeviceCard(mac);
     console.error("SetTimer error:", error);
     alert("Failed to start timer");
@@ -764,6 +800,81 @@ function updateDeviceState(rawDevice) {
   ensureDeviceCard(mac);
   refreshDeviceCard(mac);
   syncWebFilterPanel();
+}
+
+function applyDeviceStateUpdate(mac, isLocked, isFrozen, isAdminMode, timerRemainingSeconds) {
+  if (!devices[mac]) {
+    refreshDevices().catch((error) => {
+      console.error("Failed to refresh devices after state update:", error);
+    });
+    return;
+  }
+
+  devices[mac].isLocked = Boolean(isLocked);
+  devices[mac].isFrozen = Boolean(isFrozen);
+  devices[mac].isAdminMode = Boolean(isAdminMode);
+  devices[mac].timerRemainingSeconds = normalizeTimerRemainingSeconds(timerRemainingSeconds);
+
+  if (devices[mac].isLocked || devices[mac].isFrozen || devices[mac].timerRemainingSeconds == null) {
+    devices[mac].timerEndTime = null;
+  }
+
+  refreshDeviceCard(mac);
+  syncWebFilterPanel();
+}
+
+function getDeviceVisualState(device) {
+  if (!device.isOnline) {
+    return {
+      badgeText: "Offline",
+      badgeClass: "offline",
+      overlayText: "OFFLINE",
+      overlayClass: "status-grey"
+    };
+  }
+
+  if (device.isLocked) {
+    return {
+      badgeText: "Locked",
+      badgeClass: "locked",
+      overlayText: "LOCKED",
+      overlayClass: "status-red"
+    };
+  }
+
+  if (device.isFrozen) {
+    return {
+      badgeText: "Frozen",
+      badgeClass: "frozen",
+      overlayText: "FROZEN",
+      overlayClass: "status-yellow"
+    };
+  }
+
+  if (getTimerRemainingSeconds(device) != null) {
+    return {
+      badgeText: "Timer",
+      badgeClass: "timer",
+      overlayText: "ACTIVE",
+      overlayClass: "status-blue"
+    };
+  }
+
+  if (device.isAdminMode) {
+    return {
+      badgeText: "Admin",
+      badgeClass: "admin",
+      overlayText: "ADMIN",
+      overlayClass: "status-blue"
+    };
+  }
+
+  return {
+    badgeText: "Online",
+    badgeClass: "online",
+    overlayText: "ONLINE",
+    overlayClass: "status-green"
+  };
 }
 
 function createTimerSegment(unit, label) {
@@ -1002,6 +1113,8 @@ function refreshDeviceCard(mac) {
     return;
   }
 
+  const visualState = getDeviceVisualState(device);
+
   card.classList.toggle("is-online", device.isOnline);
   card.classList.toggle("state-online", device.isOnline);
   card.classList.toggle("state-offline", !device.isOnline);
@@ -1021,38 +1134,15 @@ function refreshDeviceCard(mac) {
 
   const statusBadge = card.querySelector('[data-role="status"]');
   if (statusBadge) {
-    statusBadge.textContent = device.status;
-    statusBadge.classList.remove("online", "offline");
-    statusBadge.classList.add(device.isOnline ? "online" : "offline");
+    statusBadge.textContent = visualState.badgeText;
+    statusBadge.classList.remove("online", "offline", "locked", "frozen", "timer", "admin");
+    statusBadge.classList.add(visualState.badgeClass);
   }
 
   const statusOverlay = card.querySelector('[data-role="status-overlay"]');
   if (statusOverlay) {
-    let overlayText = "OFFLINE";
-    let overlayClass = "status-grey";
-
-    if (!device.isOnline) {
-      overlayText = "OFFLINE";
-      overlayClass = "status-grey";
-    } else if (device.isLocked) {
-      overlayText = "LOCKED";
-      overlayClass = "status-red";
-    } else if (device.isFrozen) {
-      overlayText = "FROZEN";
-      overlayClass = "status-yellow";
-    } else if (device.timerEndTime) {
-      overlayText = "ACTIVE";
-      overlayClass = "status-blue";
-    } else if (device.isAdminMode) {
-      overlayText = "ADMIN";
-      overlayClass = "status-blue";
-    } else if (device.isOnline) {
-      overlayText = "ONLINE";
-      overlayClass = "status-green";
-    }
-
-    statusOverlay.textContent = overlayText;
-    statusOverlay.className = `status-overlay-badge ${overlayClass}`;
+    statusOverlay.textContent = visualState.overlayText;
+    statusOverlay.className = `status-overlay-badge ${visualState.overlayClass}`;
   }
 
   const timerPanel = card.querySelector('[data-role="timer-panel"]');
@@ -1061,6 +1151,7 @@ function refreshDeviceCard(mac) {
   const timerCountdown = card.querySelector('[data-role="timer-countdown"]');
   if (timerPanel) {
     const timerParts = getTimerParts(device);
+    timerPanel.classList.toggle("session-hidden", device.isLocked);
     timerPanel.classList.toggle("active", timerParts.active);
 
     if (timerIdle) {
@@ -1096,10 +1187,10 @@ function refreshDeviceCard(mac) {
 
   const timerButton = card.querySelector('[data-action="timer"]');
   if (timerButton) {
-    timerButton.classList.toggle("toggle-active", Boolean(device.timerEndTime));
+    timerButton.classList.toggle("toggle-active", getTimerRemainingSeconds(device) != null);
     const timerLabel = timerButton.querySelector("span");
     if (timerLabel) {
-      timerLabel.textContent = device.timerEndTime ? "Clear" : "Start";
+      timerLabel.textContent = getTimerRemainingSeconds(device) != null ? "Clear" : "Start";
     }
   }
 
@@ -1145,6 +1236,11 @@ function renderDeviceCards(deviceList) {
 
 function tickTimerBadges() {
   Object.keys(devices).forEach((mac) => {
+    const device = devices[mac];
+    if (device?.timerRemainingSeconds != null && device.timerRemainingSeconds > 0) {
+      device.timerRemainingSeconds -= 1;
+    }
+
     refreshDeviceCard(mac);
   });
 }
@@ -1173,6 +1269,10 @@ async function beginSignalR() {
 
   connection.on("DeviceStateChanged", (device) => {
     updateDeviceState(device);
+  });
+
+  connection.on("UpdateDeviceState", (mac, isLocked, isFrozen, isAdminMode, timerRemainingSeconds) => {
+    applyDeviceStateUpdate(mac, isLocked, isFrozen, isAdminMode, timerRemainingSeconds);
   });
 
   connection.onreconnecting((error) => {

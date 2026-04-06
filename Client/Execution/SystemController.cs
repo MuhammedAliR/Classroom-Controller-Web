@@ -6,6 +6,7 @@ using System.Windows;
 using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
+using ClassroomController.Client.Network;
 using Microsoft.Win32;
 using ClassroomController.Client.Native;
 using ClassroomController.Client.Utils;
@@ -33,6 +34,8 @@ public static class SystemController
     private static UI.TimerWindow? _timerWindow;
     private static IntPtr _keyboardHook = IntPtr.Zero;
     private static volatile bool _isControlPressed;
+    private static volatile bool _isStudentModeEnforced;
+    private static volatile bool _isLockPoliciesEnforced;
 
     /// <summary>
     /// Locks the screen by displaying a full-screen lock window.
@@ -49,13 +52,8 @@ public static class SystemController
             _lockWindow.Show();
         }
 
-        SetRegistryPolicy("DisableTaskMgr", 1);
-        SetRegistryPolicy("DisableChangePassword", 1);
-        SetRegistryPolicy("DisableLockWorkstation", 1);
-        SetRegistryPolicy("HideFastUserSwitching", 1);
-        SetMachineRegistryPolicy("HideFastUserSwitching", 1);
-        SetExplorerPolicy("NoLogoff", 1);
-        SetExplorerPolicy("NoClose", 1);
+        _isLockPoliciesEnforced = true;
+        ApplyCurrentPolicyState();
         InstallKeyboardHook();
         SetHardwareInputBlocked(true);
     }
@@ -67,7 +65,10 @@ public static class SystemController
     {
         Logger.Log("SystemController: Unlocking screen");
 
-        RestoreLockPoliciesAndInput();
+        SetHardwareInputBlocked(false);
+        RemoveKeyboardHook();
+        _isLockPoliciesEnforced = false;
+        ApplyCurrentPolicyState();
 
         if (_lockWindow != null && _lockWindow.IsVisible)
         {
@@ -81,32 +82,23 @@ public static class SystemController
         StopSoftLock();
         SetHardwareInputBlocked(false);
         RemoveKeyboardHook();
-        SetRegistryPolicy("DisableTaskMgr", 0);
-        SetRegistryPolicy("DisableChangePassword", 0);
-        SetRegistryPolicy("DisableLockWorkstation", 0);
-        SetRegistryPolicy("HideFastUserSwitching", 0);
-        SetMachineRegistryPolicy("HideFastUserSwitching", 0);
-        SetExplorerPolicy("NoLogoff", 0);
-        SetExplorerPolicy("NoClose", 0);
+        _isLockPoliciesEnforced = false;
+        _isStudentModeEnforced = false;
+        ApplyCurrentPolicyState();
     }
 
     public static void EnforceStudentMode(bool enforce)
     {
-        var value = enforce ? 1 : 0;
-
-        SetRegistryPolicy("DisableTaskMgr", value);
-        SetRegistryPolicy("DisableRegistryTools", value);
-        SetExplorerPolicy("NoControlPanel", value);
-        SetExplorerPolicy("NoClose", value);
-        SetWindowsSystemPolicy("DisableCMD", value);
+        _isStudentModeEnforced = enforce;
+        ApplyCurrentPolicyState();
 
         Logger.Log($"SystemController: Student mode enforced={enforce}");
     }
 
-    public static void ApplySyncState(bool isLocked, bool isFrozen, bool isAdminMode, DateTime? timerEndTime, string blockedWebsites)
+    public static void ApplySyncState(bool isLocked, bool isFrozen, bool isAdminMode, int? timerRemainingSeconds, string blockedWebsites)
     {
         Logger.Log(
-            $"SystemController: Applying sync state lock={isLocked}, freeze={isFrozen}, admin={isAdminMode}, timerEnd={timerEndTime?.ToString("O") ?? "null"}, websites={blockedWebsites}");
+            $"SystemController: Applying sync state lock={isLocked}, freeze={isFrozen}, admin={isAdminMode}, timerSeconds={timerRemainingSeconds?.ToString() ?? "null"}, websites={blockedWebsites}");
 
         EnforceStudentMode(!isAdminMode);
         ApplyBlockedWebsiteState(ParseBlockedWebsiteList(blockedWebsites), killBrowsersIfBlocked: true);
@@ -130,9 +122,9 @@ public static class SystemController
                 StopSoftLock();
             }
 
-            if (timerEndTime.HasValue)
+            if (timerRemainingSeconds.HasValue && timerRemainingSeconds.Value > 0)
             {
-                StartTimer(timerEndTime.Value.ToUniversalTime() - DateTime.UtcNow);
+                StartTimer(timerRemainingSeconds.Value);
             }
             else
             {
@@ -357,28 +349,34 @@ public static class SystemController
         });
     }
 
-    public static void StartTimer(int minutes)
+    public static void StartTimer(int totalSeconds)
     {
-        StartTimer(TimeSpan.FromMinutes(Math.Max(0, minutes)));
-    }
-
-    public static void StartTimer(TimeSpan remaining)
-    {
-        Logger.Log($"SystemController: Starting timer for {remaining}");
+        Logger.Log($"SystemController: Starting timer for {totalSeconds} seconds");
 
         System.Windows.Application.Current.Dispatcher.Invoke(() =>
         {
             StopTimer();
 
-            if (remaining <= TimeSpan.Zero)
+            if (totalSeconds <= 0)
             {
                 LockScreen();
                 return;
             }
 
-            _timerWindow = new UI.TimerWindow(remaining);
-            _timerWindow.Show();
+            var timerWindow = new UI.TimerWindow(totalSeconds);
+            timerWindow.TimerFinished += () =>
+            {
+                _ = ConnectionManager.NotifyTimerExpired();
+            };
+
+            _timerWindow = timerWindow;
+            timerWindow.Show();
         });
+    }
+
+    public static void StartTimer(TimeSpan remaining)
+    {
+        StartTimer(Math.Max(0, (int)Math.Ceiling(remaining.TotalSeconds)));
     }
 
     public static void StopTimer()
@@ -804,6 +802,61 @@ public static class SystemController
 
         key.SetValue(keyName, value, RegistryValueKind.DWord);
         Logger.Log($"SystemController: Set {keyName}={value}");
+    }
+
+    private static void ApplyCurrentPolicyState()
+    {
+        ApplyStudentModePolicies(_isStudentModeEnforced);
+        ApplyLockPolicies(_isLockPoliciesEnforced);
+        NotifyPolicyChanged();
+    }
+
+    private static void ApplyStudentModePolicies(bool enabled)
+    {
+        var value = enabled ? 1 : 0;
+        SetRegistryPolicy("DisableTaskMgr", value);
+        SetRegistryPolicy("DisableRegistryTools", value);
+        SetExplorerPolicy("NoControlPanel", value);
+        SetExplorerPolicy("NoClose", value);
+        SetWindowsSystemPolicy("DisableCMD", value);
+    }
+
+    private static void ApplyLockPolicies(bool enabled)
+    {
+        var value = enabled ? 1 : 0;
+        SetRegistryPolicy("DisableChangePassword", value);
+        SetRegistryPolicy("DisableLockWorkstation", value);
+        SetRegistryPolicy("HideFastUserSwitching", value);
+        SetMachineRegistryPolicy("HideFastUserSwitching", value);
+        SetExplorerPolicy("NoLogoff", value);
+
+        if (enabled)
+        {
+            SetExplorerPolicy("NoClose", 1);
+        }
+        else if (!_isStudentModeEnforced)
+        {
+            SetExplorerPolicy("NoClose", 0);
+        }
+    }
+
+    private static void NotifyPolicyChanged()
+    {
+        try
+        {
+            _ = WindowsAPI.SendMessageTimeout(
+                WindowsAPI.HWND_BROADCAST,
+                WindowsAPI.WM_SETTINGCHANGE,
+                IntPtr.Zero,
+                "Policy",
+                WindowsAPI.SMTO_ABORTIFHUNG,
+                100,
+                out _);
+        }
+        catch (Exception ex)
+        {
+            Logger.Log($"SystemController: Failed to broadcast policy refresh - {ex.Message}");
+        }
     }
 
     private static IntPtr KeyboardHookProc(int nCode, IntPtr wParam, IntPtr lParam)
